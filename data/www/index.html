@@ -46,6 +46,7 @@
           <div class="status-item"><span>Ethernet-IP</span><strong id="ethernetStatus">–</strong></div>
           <div class="status-item"><span>Mobilfunk</span><strong id="cellularStatus">–</strong></div>
           <div class="status-item"><span>MQTT</span><strong id="mqttStatus">–</strong></div>
+          <div class="status-item"><span>Firmware</span><strong id="firmwareVersionStatus">–</strong></div>
           <div class="status-item"><span>Datum und Uhrzeit</span><strong id="dateTimeStatus">–</strong></div>
           <div class="status-item"><span>Internetweg</span><strong id="internetStatus">–</strong></div>
         </div>
@@ -174,9 +175,10 @@
           </div>
           <div class="update-panel">
             <div class="installed-versions">
-              <div><span>Hauptprogramm</span><strong id="currentFirmware">–</strong><small id="firmwareUpdateState">Status wird geprüft</small></div>
-              <div><span>Minimalprogramm / Recovery</span><strong id="currentRecovery">–</strong><small id="recoveryUpdateState">Status wird geprüft</small></div>
-              <div><span>Weboberfläche</span><strong id="currentWeb">–</strong><small id="webUpdateState">Status wird geprüft</small></div>
+              <div><span>Installiert</span><strong id="currentFirmware">–</strong><small id="installedDetails">Recovery: – · Web: –</small></div>
+              <div><span>Hauptprogramm</span><strong id="firmwareUpdateState">Status wird geprüft</strong></div>
+              <div><span>Recovery</span><strong id="recoveryUpdateState">Status wird geprüft</strong></div>
+              <div><span>Weboberfläche</span><strong id="webUpdateState">Status wird geprüft</strong></div>
               <small id="updateMessage">Noch nicht geprüft</small>
             </div>
             <div class="actions"><button type="button" class="button secondary" id="checkUpdate">Jetzt prüfen</button><button type="button" class="button warning" id="approveUpdate" hidden>Update bestätigen</button></div>
