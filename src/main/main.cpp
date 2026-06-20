@@ -1679,7 +1679,9 @@ void setupWeb() {
   });
   web.on("/api/logs", HTTP_GET, [] {
     if (!authorized()) return;
-    if (!sdReady || !SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
+    if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
+    maintainSystemLog(true);
+    if (!SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     int limit = web.arg("limit").toInt();
     if (limit < 1) limit = 100;
     if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
