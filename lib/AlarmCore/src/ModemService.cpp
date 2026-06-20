@@ -187,6 +187,27 @@ bool ModemService::waitFor(const String &token, String &answer, uint32_t timeout
   return false;
 }
 
+bool ModemService::waitForLine(const String &token, String &answer, uint32_t timeout) {
+  answer = "";
+  String line;
+  uint32_t start = millis();
+  while (millis() - start < timeout) {
+    while (serial_.available()) {
+      char value = static_cast<char>(serial_.read());
+      answer += value;
+      line += value;
+      if (value == '\n') {
+        if (line.indexOf(token) >= 0) return true;
+        line = "";
+      }
+      if (answer.length() > 512) answer.remove(0, answer.length() - 512);
+      if (line.length() > 160) line.remove(0, line.length() - 160);
+    }
+    delay(2);
+  }
+  return false;
+}
+
 bool ModemService::readBinaryToFile(const char *path, size_t size, String &error) {
   SD.remove(path);
   File target = SD.open(path, FILE_WRITE);
@@ -238,14 +259,12 @@ bool ModemService::downloadEc25(const String &url, const char *path, String &err
   serial_.print(url);
   if (!waitFor("OK", answer, 10000)) { error = "EC25 URL wurde nicht angenommen"; return false; }
   serial_.println("AT+QHTTPGET=120");
-  if (!waitFor("+QHTTPGET:", answer, 130000)) { error = "EC25 HTTP GET ohne Antwort"; return false; }
+  if (!waitForLine("+QHTTPGET:", answer, 130000)) { error = "EC25 HTTP GET ohne Antwort"; return false; }
   int status = httpStatusFromUrc(answer, "+QHTTPGET:");
   int size = payloadSizeFromUrc(answer, "+QHTTPGET:");
   if (status != 200 || size <= 0) { error = "EC25 HTTP Status " + String(status); return false; }
   serial_.println("AT+QHTTPREAD=120");
-  if (!waitFor("CONNECT", answer, 10000)) { error = "EC25 HTTPREAD nicht gestartet"; return false; }
-  delay(2);
-  while (serial_.peek() == '\r' || serial_.peek() == '\n') serial_.read();
+  if (!waitForLine("CONNECT", answer, 10000)) { error = "EC25 HTTPREAD nicht gestartet"; return false; }
   return readBinaryToFile(path, static_cast<size_t>(size), error);
 }
 
@@ -258,7 +277,7 @@ bool ModemService::downloadSim7500(const String &url, const char *path, String &
   if (!command("AT+HTTPPARA=\"URL\",\"" + url + "\"", "OK", 10000)) { error = "SIM7500 URL wurde nicht angenommen"; command("AT+HTTPTERM", "OK", 3000); return false; }
   serial_.println("AT+HTTPACTION=0");
   String answer;
-  if (!waitFor("+HTTPACTION:", answer, 130000)) { error = "SIM7500 HTTPACTION ohne Antwort"; command("AT+HTTPTERM", "OK", 3000); return false; }
+  if (!waitForLine("+HTTPACTION:", answer, 130000)) { error = "SIM7500 HTTPACTION ohne Antwort"; command("AT+HTTPTERM", "OK", 3000); return false; }
   int status = httpStatusFromUrc(answer, "+HTTPACTION:");
   int total = payloadSizeFromUrc(answer, "+HTTPACTION:");
   if (status != 200 || total <= 0) { error = "SIM7500 HTTP Status " + String(status); command("AT+HTTPTERM", "OK", 3000); return false; }
@@ -270,10 +289,9 @@ bool ModemService::downloadSim7500(const String &url, const char *path, String &
   while (offset < total) {
     int requested = min(1024, total - offset);
     serial_.println("AT+HTTPREAD=" + String(offset) + "," + String(requested));
-    if (!waitFor("+HTTPREAD:", answer, 10000)) { error = "SIM7500 HTTPREAD ohne Antwort"; break; }
+    if (!waitForLine("+HTTPREAD:", answer, 10000)) { error = "SIM7500 HTTPREAD ohne Antwort"; break; }
     int chunk = simReadSize(answer);
     if (chunk <= 0) { error = "SIM7500 HTTPREAD leer"; break; }
-    while (serial_.peek() == '\r' || serial_.peek() == '\n') serial_.read();
     size_t read = 0;
     uint32_t lastByte = millis();
     while (read < static_cast<size_t>(chunk) && millis() - lastByte < 30000) {

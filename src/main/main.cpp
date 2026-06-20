@@ -2163,6 +2163,7 @@ void processAlarmSocketLine(const String &line) {
   response["modemImei"] = modem.imei();
   String result;
   bool ok = false;
+  bool skipCommandLog = false;
   if (parsed) {
     result = String("JSON ungueltig: ") + parsed.c_str();
   } else if (String(input["type"] | "") == "statusRequest" ||
@@ -2178,6 +2179,7 @@ void processAlarmSocketLine(const String &line) {
     if (payloadImei.isEmpty()) payloadImei = input["imei"] | "";
     ok = recordMioneHeartbeat(payloadImei, input["value"] | true, input["timestampUtc"] | "", "TCP", result);
     response["type"] = "heartbeatResult";
+    skipCommandLog = true;
   } else {
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
     uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
@@ -2189,7 +2191,7 @@ void processAlarmSocketLine(const String &line) {
   String body;
   serializeJson(response, body);
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
-  queueSystemLog(ok ? "TCP_COMMAND" : "TCP_COMMAND_ERROR", result);
+  if (!skipCommandLog) queueSystemLog(ok ? "TCP_COMMAND" : "TCP_COMMAND_ERROR", result);
 }
 
 void maintainOfflineTcp() {

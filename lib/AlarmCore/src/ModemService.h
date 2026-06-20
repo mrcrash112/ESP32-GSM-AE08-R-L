@@ -26,6 +26,7 @@ class ModemService {
   bool command(const String &value, const char *expected, uint32_t timeout = 2000);
   String readUntil(uint32_t timeout);
   bool waitFor(const String &token, String &answer, uint32_t timeout);
+  bool waitForLine(const String &token, String &answer, uint32_t timeout);
   bool readBinaryToFile(const char *path, size_t size, String &error);
   bool downloadEc25(const String &url, const char *path, String &error);
   bool downloadSim7500(const String &url, const char *path, String &error);
