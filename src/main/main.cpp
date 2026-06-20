@@ -129,12 +129,15 @@ struct UpdateState {
   String channel;
   String firmwareUrl;
   String firmwareMd5;
+  size_t firmwareSize = 0;
   String recoveryVersion;
   String recoveryUrl;
   String recoveryMd5;
+  size_t recoverySize = 0;
   String webVersion;
   String webUrl;
   String webMd5;
+  size_t webSize = 0;
   String message;
   String detail;
   uint8_t progress = 0;
@@ -142,7 +145,7 @@ struct UpdateState {
 
 void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
 bool updateNetworkReady();
-bool downloadedFileReady(const char *path, const String &expectedMd5);
+bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
 void publishMioneStatus(bool force = false);
 
 String updateInstallTimeText() {
@@ -263,6 +266,9 @@ void fillUpdateStatus(JsonObject update) {
   update["version"] = updateState.version;
   update["recoveryTargetVersion"] = updateState.recoveryVersion;
   update["webTargetVersion"] = updateState.webVersion;
+  update["firmwareSize"] = updateState.firmwareSize;
+  update["recoverySize"] = updateState.recoverySize;
+  update["webSize"] = updateState.webSize;
   update["checking"] = updateState.checking;
   update["approved"] = updateState.approved;
   update["installing"] = updateState.installing;
@@ -335,24 +341,27 @@ bool checkUpdateManifest(String &error) {
   JsonObjectConst firmware = manifest["firmware"];
   String firmwareUrl = firmware["url"] | manifest["url"] | "";
   String firmwareMd5 = firmware["md5"] | manifest["md5"] | "";
+  size_t firmwareSize = firmware["size"] | manifest["size"] | 0;
   firmwareMd5.toLowerCase();
-  if (version.isEmpty() || !githubUrl(firmwareUrl) || !validMd5(firmwareMd5)) { error = "Firmware-Angaben im Manifest fehlen"; return false; }
+  if (version.isEmpty() || !githubUrl(firmwareUrl) || !validMd5(firmwareMd5) || firmwareSize == 0) { error = "Firmware-Angaben im Manifest fehlen"; return false; }
   bool firmwareAvailable = newerVersion(version, BuildInfo::version);
   JsonObjectConst recovery = manifest["recovery"];
   String recoveryUrl = recovery["url"] | "";
   String recoveryMd5 = recovery["md5"] | "";
+  size_t recoverySize = recovery["size"] | 0;
   recoveryMd5.toLowerCase();
   String recoveryVersion = recovery["version"] | "";
-  if (!recoveryVersion.isEmpty() && (!githubUrl(recoveryUrl) || !validMd5(recoveryMd5))) { error = "Recovery-Angaben im Manifest sind ungueltig"; return false; }
+  if (!recoveryVersion.isEmpty() && (!githubUrl(recoveryUrl) || !validMd5(recoveryMd5) || recoverySize == 0)) { error = "Recovery-Angaben im Manifest sind ungueltig"; return false; }
   bool recoveryAvailable = !recoveryVersion.isEmpty() && newerVersion(recoveryVersion, installedRecoveryVersion());
   JsonObjectConst webPackage = manifest["web"];
   String webVersion = webPackage["version"] | "";
   String webUrl = webPackage["url"] | "";
   String webMd5 = webPackage["md5"] | "";
+  size_t webSize = webPackage["size"] | 0;
   String webFormat = webPackage["format"] | "";
   webMd5.toLowerCase();
   bool webAvailable = webVersion == version && installedWebVersion() != webVersion;
-  if ((firmwareAvailable || webAvailable) && (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5))) {
+  if ((firmwareAvailable || webAvailable) && (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5) || webSize == 0)) {
     error = "Passendes WWW-Paket fehlt oder ist ungueltig";
     return false;
   }
@@ -364,16 +373,19 @@ bool checkUpdateManifest(String &error) {
   updateState.channel = channel;
   updateState.firmwareUrl = firmwareUrl;
   updateState.firmwareMd5 = firmwareMd5;
+  updateState.firmwareSize = firmwareSize;
   updateState.recoveryVersion = recoveryVersion;
   updateState.recoveryUrl = recoveryUrl;
   updateState.recoveryMd5 = recoveryMd5;
+  updateState.recoverySize = recoverySize;
   updateState.webVersion = webVersion;
   updateState.webUrl = webUrl;
   updateState.webMd5 = webMd5;
+  updateState.webSize = webSize;
   updateState.downloaded = updateState.available &&
-      (!recoveryAvailable || downloadedFileReady(BuildInfo::recoveryPath, recoveryMd5)) &&
-      (!firmwareAvailable || downloadedFileReady(BuildInfo::firmwarePath, firmwareMd5)) &&
-      (!webAvailable || downloadedFileReady(BuildInfo::webPackagePath, webMd5));
+      (!recoveryAvailable || downloadedFileReady(BuildInfo::recoveryPath, recoveryMd5, recoverySize)) &&
+      (!firmwareAvailable || downloadedFileReady(BuildInfo::firmwarePath, firmwareMd5, firmwareSize)) &&
+      (!webAvailable || downloadedFileReady(BuildInfo::webPackagePath, webMd5, webSize));
   if (firmwareAvailable && recoveryAvailable && webAvailable) updateState.message = "Firmware " + version + ", Recovery " + recoveryVersion + " und WWW verfuegbar";
   else if (firmwareAvailable && recoveryAvailable) updateState.message = "Firmware " + version + " und Recovery " + recoveryVersion + " verfuegbar";
   else if (firmwareAvailable) updateState.message = "Firmware " + version + " verfuegbar";
@@ -383,25 +395,45 @@ bool checkUpdateManifest(String &error) {
   return true;
 }
 
-bool verifyDownloadedFile(const char *path, const String &expectedMd5, String &error) {
+String fileCheckDetail(size_t actualSize, size_t expectedSize, const String &actualMd5, const String &expectedMd5) {
+  String detail = "Ist ";
+  detail += String(actualSize);
+  if (expectedSize > 0) detail += " / Soll " + String(expectedSize);
+  if (!actualMd5.isEmpty()) detail += " Byte, MD5 " + actualMd5 + " / " + expectedMd5;
+  return detail;
+}
+
+bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t expectedSize, String &error) {
   File check = SD.open(path, FILE_READ);
   if (!check) { error = "Download-Datei fehlt"; return false; }
+  size_t actualSize = check.size();
+  if (expectedSize > 0 && actualSize != expectedSize) {
+    check.close();
+    SD.remove(path);
+    error = "Download-Groesse falsch (" + fileCheckDetail(actualSize, expectedSize, "", expectedMd5) + " Byte)";
+    return false;
+  }
   MD5Builder md5;
   md5.begin();
-  md5.addStream(check, check.size());
+  md5.addStream(check, actualSize);
   md5.calculate();
   check.close();
-  if (md5.toString() != expectedMd5) { SD.remove(path); error = "MD5-Pruefung fehlgeschlagen"; return false; }
+  String actualMd5 = md5.toString();
+  if (actualMd5 != expectedMd5) {
+    SD.remove(path);
+    error = "MD5-Pruefung fehlgeschlagen (" + fileCheckDetail(actualSize, expectedSize, actualMd5, expectedMd5) + ")";
+    return false;
+  }
   return true;
 }
 
-bool downloadedFileReady(const char *path, const String &expectedMd5) {
+bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize) {
   if (!sdReady || !validMd5(expectedMd5) || !SD.exists(path)) return false;
   String error;
-  return verifyDownloadedFile(path, expectedMd5, error);
+  return verifyDownloadedFile(path, expectedMd5, expectedSize, error);
 }
 
-bool downloadToSd(const String &url, const char *path, const String &expectedMd5,
+bool downloadToSd(const String &url, const char *path, const String &expectedMd5, size_t expectedSize,
                   const String &label, uint8_t progressFrom, uint8_t progressTo,
                   String &error) {
   if (!githubUrl(url) || !validMd5(expectedMd5)) { error = "Download-Angaben ungueltig"; return false; }
@@ -412,13 +444,15 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
       return false;
     }
     showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-    return verifyDownloadedFile(path, expectedMd5, error);
+    return verifyDownloadedFile(path, expectedMd5, expectedSize, error);
   }
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
   request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!request.begin(tls, url)) { error = "Download konnte nicht gestartet werden"; return false; }
+  request.addHeader("Accept-Encoding", "identity");
+  request.addHeader("Cache-Control", "no-cache");
   int status = request.GET();
   if (status != HTTP_CODE_OK) { request.end(); error = "Download HTTP " + String(status); return false; }
   SD.remove(path);
@@ -456,13 +490,16 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   }
   target.close();
   request.end();
+  if (error.isEmpty() && expectedSize > 0 && written != expectedSize) {
+    error = "Download-Groesse falsch (Ist " + String(written) + " / Soll " + String(expectedSize) + " Byte)";
+  }
   if (!error.isEmpty() || written == 0 || (total > 0 && written != static_cast<size_t>(total))) {
     SD.remove(path);
     if (error.isEmpty()) error = "Download ist unvollstaendig";
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-  return verifyDownloadedFile(path, expectedMd5, error);
+  return verifyDownloadedFile(path, expectedMd5, expectedSize, error);
 }
 
 bool removeSdTree(const String &path) {
@@ -764,24 +801,24 @@ bool downloadAvailableUpdateFiles(String &error) {
   updateState.downloaded = false;
   updateState.message = "Update-Dateien werden geladen";
   if (updateState.recoveryAvailable &&
-      !downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5) &&
-      !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
+      !downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5, updateState.recoverySize) &&
+      !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5, updateState.recoverySize,
                     "Recovery laden", 5, 22, error)) {
     updateState.downloading = false;
     updateState.message = error;
     return false;
   }
   if (updateState.firmwareAvailable &&
-      !downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5) &&
-      !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+      !downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5, updateState.firmwareSize) &&
+      !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5, updateState.firmwareSize,
                     "Firmware laden", 30, 58, error)) {
     updateState.downloading = false;
     updateState.message = error;
     return false;
   }
   if ((updateState.firmwareAvailable || updateState.webAvailable) &&
-      !downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5) &&
-      !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+      !downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5, updateState.webSize) &&
+      !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5, updateState.webSize,
                     "Webseite laden", 60, 82, error)) {
     SD.remove(BuildInfo::firmwarePath);
     updateState.downloading = false;
@@ -810,8 +847,8 @@ bool prepareApprovedUpdate(String &error) {
   }
   if (updateState.recoveryAvailable) {
     updateState.message = "Recovery wird aktualisiert";
-    if ((!downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5) &&
-         !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
+    if ((!downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5, updateState.recoverySize) &&
+         !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5, updateState.recoverySize,
                        "Recovery laden", 5, 18, error)) ||
         !installRecovery(updateState.recoveryMd5, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
@@ -826,14 +863,14 @@ bool prepareApprovedUpdate(String &error) {
   }
   if (updateState.firmwareAvailable) {
     updateState.message = "Hauptfirmware wird geladen";
-    if (!downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5) &&
-        !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+    if (!downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5, updateState.firmwareSize) &&
+        !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5, updateState.firmwareSize,
                       "Firmware laden", 30, 55, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
   if (updateState.firmwareAvailable || updateState.webAvailable) {
     updateState.message = "Weboberflaeche wird geladen";
-    if (!downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5) &&
-        !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+    if (!downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5, updateState.webSize) &&
+        !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5, updateState.webSize,
                       "Webseite laden", 56, 70, error)) {
       SD.remove(BuildInfo::firmwarePath);
       updateState.installing = false;
@@ -1450,7 +1487,7 @@ void setupWeb() {
     }
     if (expected.length() != 32) return errorResponse(400, "MD5 muss 32 Hex-Zeichen enthalten");
     String error;
-    if (!downloadToSd(url, BuildInfo::firmwarePath, expected, "Firmware laden", 20, 85, error)) {
+    if (!downloadToSd(url, BuildInfo::firmwarePath, expected, 0, "Firmware laden", 20, 85, error)) {
       return errorResponse(502, error);
     }
     web.send(200, "application/json", "{\"ok\":true,\"staged\":true}");
