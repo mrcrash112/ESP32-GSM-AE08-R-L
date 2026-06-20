@@ -67,6 +67,7 @@ bool accessPoint = false;
 File uploadFile;
 String uploadPath;
 uint32_t lastMqttAttempt = 0;
+uint32_t mqttConnectWindowStartedAt = 0;
 uint32_t lastMioneStatusPublish = 0;
 uint32_t lastSocketStatusPublish = 0;
 uint32_t mioneStatusSequence = 0;
@@ -1884,29 +1885,46 @@ String mqttErrorMessage(int state) {
 
 void maintainMqtt() {
   if (!config.mqttEnabled) {
+    mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(-10, "MQTT ist in der Konfiguration deaktiviert");
     return;
   }
   if (config.mqttHost.isEmpty()) {
+    mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(-11, "Broker oder Hostname fehlt");
     return;
   }
   if (mqtt.connected()) {
+    mqttConnectWindowStartedAt = 0;
     String transport = ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "WLAN";
     if (mqtt.loop()) setMqttConnectionStatus(MQTT_CONNECTED, "Mit dem MQTT-Broker verbunden", transport);
-    else setMqttConnectionStatus(mqtt.state(), mqttErrorMessage(mqtt.state()), transport);
+    else {
+      setMqttConnectionStatus(mqtt.state(), mqttErrorMessage(mqtt.state()), transport);
+      mqtt.disconnect();
+      lastMqttAttempt = 0;
+      mqttConnectWindowStartedAt = millis();
+    }
     return;
   }
   bool wifiUp = WiFi.status() == WL_CONNECTED;
   bool ethernetUp = ethernetReady && Ethernet.linkStatus() == LinkON;
   String root = mqttDeviceRoot();
   if (!wifiUp && !ethernetUp) {
+    mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(-12, "Keine WLAN- oder Ethernetverbindung");
     return;
   }
   if (root.isEmpty()) {
+    mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(-13, "Modem-IMEI fuer das MQTT-Topic fehlt");
     return;
+  }
+  if (mqttConnectWindowStartedAt == 0) mqttConnectWindowStartedAt = millis();
+  if (static_cast<int32_t>(millis() - mqttConnectWindowStartedAt) >= 60000) {
+    mqtt.disconnect();
+    lastMqttAttempt = 0;
+    mqttConnectWindowStartedAt = millis();
+    setMqttConnectionStatus(-14, "MQTT binnen 60 Sekunden nicht verbunden, Reconnect wird gestartet");
   }
   if (millis() - lastMqttAttempt < 10000) return;
   lastMqttAttempt = millis();
@@ -1919,6 +1937,7 @@ void maintainMqtt() {
   String offline = "{\"online\":false,\"imei\":\"" + modem.imei() + "\"}";
   bool connected = mqtt.connect(clientId.c_str(), config.mqttUser.c_str(), config.mqttPassword.c_str(), willTopic.c_str(), 1, true, offline.c_str());
   if (connected) {
+    mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(MQTT_CONNECTED, "Mit dem MQTT-Broker verbunden", transport);
     String online = "{\"online\":true,\"imei\":\"" + modem.imei() + "\"}";
     mqtt.publish(willTopic.c_str(), online.c_str(), true);
