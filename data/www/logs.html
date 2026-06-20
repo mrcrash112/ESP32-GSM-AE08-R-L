@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mione Systemprotokoll</title>
+  <link rel="stylesheet" href="/logs.css">
+</head>
+<body>
+  <header>
+    <div class="wrap brand">
+      <img src="/logo.png" alt="Logo Elektrotechnik Jozefowicz">
+      <div><span>Elektrotechnik Jozefowicz</span><h1>Systemprotokoll</h1><p>Mione Alarmmelder</p></div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="toolbar">
+      <div><span>Logdatei</span><strong>/logs/system.csv</strong></div>
+      <label><span>Anzahl Einträge</span><input id="limit" type="number" min="1" max="2000" value="250"></label>
+      <button id="refresh" type="button">Aktualisieren</button>
+    </section>
+    <div class="summary"><strong id="count">0 Einträge</strong><span id="state">Wird geladen …</span></div>
+    <section class="table-wrap">
+      <table>
+        <thead><tr><th>Zeitpunkt</th><th>Ereignis</th><th>Details</th></tr></thead>
+        <tbody id="entries"><tr><td colspan="3" class="empty">Systemprotokoll wird geladen …</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="/logs.js"></script>
+</body>
+</html>
