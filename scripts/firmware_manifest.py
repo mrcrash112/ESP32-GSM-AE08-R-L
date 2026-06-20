@@ -22,8 +22,8 @@ firmware = args.firmware
 version = args.version
 base_url = args.base_url.rstrip("/")
 www_dir = args.www_dir
-if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-    parser.error("version must use semantic versioning, for example 1.2.3")
+if not re.fullmatch(r"\d+\.\d+\.\d+(?:_Beta|-[0-9A-Za-z.-]+)?", version):
+    parser.error("version must use 1.2.3, 1.2.3_Beta or semantic prerelease syntax")
 main_asset = f"mione-main-{version}.bin"
 shutil.copyfile(firmware, firmware.parent / main_asset)
 manifest = {

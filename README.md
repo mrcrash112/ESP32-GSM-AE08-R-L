@@ -119,6 +119,12 @@ unter `<mqtt_benutzername>/MiOne/AlarmStatus`. Jede Meldung enthaelt IMEI,
 Alarmcode, Alarmtext, Rufnummer und Alarmierungsart. MiOne zeigt nur Meldungen
 mit der dort konfigurierten Modem-IMEI an.
 
+Alle fuenf Sekunden sendet das Geraet ausserdem einen retained Modemstatus unter
+`<mqtt_benutzername>/MiOne/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
+Datenkontext, Signal, Netzbetreiber und den vollstaendigen OTA-Status fuer
+Hauptfirmware, Recovery und WWW. MiOne wertet 15 Sekunden ohne neue Meldung als
+Verbindungsverlust.
+
 ## Lokaler TCP-Socket
 
 Bei aktiviertem Offline-TCP lauscht das Geraet im WLAN und Ethernet auf dem
@@ -127,6 +133,9 @@ Port eingetragen. MiOne sendet ein JSON-Objekt mit Zeilenumbruch und haelt die
 Verbindung fuer die Alarmbearbeitung offen. Das Modem antwortet mit denselben
 `alarmProgress`-JSON-Zeilen wie ueber MQTT und abschliessend mit `alarmResult`.
 Der Schalter `Alarmfortschritt` steuert MQTT- und TCP-Rueckmeldungen gemeinsam.
+Eine TCP-Verbindung erhaelt alle fuenf Sekunden zusaetzlich eine
+`modemStatus`-Zeile. Mit `{"type":"statusRequest"}` kann MiOne diesen Status
+sofort abfragen.
 
 `Mobile/modemImei` enthaelt die in MiOne konfigurierte Modem-IMEI als retained
 Textwert. Der ESP vergleicht sie mit der direkt aus dem Mobilfunkmodem gelesenen

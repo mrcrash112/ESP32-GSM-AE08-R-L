@@ -67,6 +67,9 @@ bool accessPoint = false;
 File uploadFile;
 String uploadPath;
 uint32_t lastMqttAttempt = 0;
+uint32_t lastMioneStatusPublish = 0;
+uint32_t lastSocketStatusPublish = 0;
+uint32_t mioneStatusSequence = 0;
 int mqttConnectionCode = -1;
 String mqttConnectionMessage = "Noch nicht gestartet";
 String mqttConnectionTransport;
@@ -135,6 +138,7 @@ struct UpdateState {
 void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
 bool updateNetworkReady();
 bool downloadedFileReady(const char *path, const String &expectedMd5);
+void publishMioneStatus(bool force = false);
 
 String updateInstallTimeText() {
   char value[8];
@@ -173,8 +177,14 @@ bool newerVersion(String candidate, String current) {
   current.trim();
   if (candidate.startsWith("v")) candidate.remove(0, 1);
   if (current.startsWith("v")) current.remove(0, 1);
-  String candidateCore = candidate.substring(0, candidate.indexOf('-') < 0 ? candidate.length() : candidate.indexOf('-'));
-  String currentCore = current.substring(0, current.indexOf('-') < 0 ? current.length() : current.indexOf('-'));
+  int candidateSuffix = candidate.indexOf('-');
+  int candidateBeta = candidate.indexOf("_Beta");
+  if (candidateSuffix < 0 || (candidateBeta >= 0 && candidateBeta < candidateSuffix)) candidateSuffix = candidateBeta;
+  int currentSuffix = current.indexOf('-');
+  int currentBeta = current.indexOf("_Beta");
+  if (currentSuffix < 0 || (currentBeta >= 0 && currentBeta < currentSuffix)) currentSuffix = currentBeta;
+  String candidateCore = candidate.substring(0, candidateSuffix < 0 ? candidate.length() : candidateSuffix);
+  String currentCore = current.substring(0, currentSuffix < 0 ? current.length() : currentSuffix);
   for (uint8_t part = 0; part < 3; ++part) {
     int candidateDot = candidateCore.indexOf('.');
     int currentDot = currentCore.indexOf('.');
@@ -184,7 +194,7 @@ bool newerVersion(String candidate, String current) {
     candidateCore = candidateDot < 0 ? "0" : candidateCore.substring(candidateDot + 1);
     currentCore = currentDot < 0 ? "0" : currentCore.substring(currentDot + 1);
   }
-  return current.indexOf('-') >= 0 && candidate.indexOf('-') < 0;
+  return currentSuffix >= 0 && candidateSuffix < 0;
 }
 
 bool githubUrl(const String &url) {
@@ -234,6 +244,33 @@ void setInstalledRecoveryVersion(const String &version) {
     prefs.putString("recoveryVersion", version);
     prefs.end();
   }
+}
+
+void fillUpdateStatus(JsonObject update) {
+  update["currentVersion"] = BuildInfo::version;
+  update["currentWebVersion"] = installedWebVersion();
+  update["currentRecoveryVersion"] = installedRecoveryVersion();
+  update["recoveryVersion"] = installedRecoveryVersion();
+  update["available"] = updateState.available;
+  update["firmwareAvailable"] = updateState.firmwareAvailable;
+  update["recoveryAvailable"] = updateState.recoveryAvailable;
+  update["webAvailable"] = updateState.webAvailable;
+  update["version"] = updateState.version;
+  update["recoveryTargetVersion"] = updateState.recoveryVersion;
+  update["webTargetVersion"] = updateState.webVersion;
+  update["checking"] = updateState.checking;
+  update["approved"] = updateState.approved;
+  update["installing"] = updateState.installing;
+  update["downloading"] = updateState.downloading;
+  update["downloadQueued"] = updateState.downloadQueued;
+  update["downloaded"] = updateState.downloaded;
+  update["failed"] = updateState.failed;
+  update["channel"] = updateState.channel.isEmpty() ? config.updateChannel : updateState.channel;
+  update["autoInstall"] = config.updateAutoInstall;
+  update["autoInstallTime"] = updateInstallTimeText();
+  update["message"] = updateState.message;
+  update["detail"] = updateState.detail;
+  update["progress"] = updateState.progress;
 }
 
 bool checkUpdateManifest(String &error) {
@@ -1142,29 +1179,7 @@ void setupWeb() {
                       (ethernetReady && Ethernet.linkStatus() == LinkON) ? "ethernet" :
                       modem.packetDataConnected() ? "cellular" : "offline";
     JsonObject update = doc.createNestedObject("update");
-    update["currentVersion"] = BuildInfo::version;
-    update["currentWebVersion"] = installedWebVersion();
-    update["recoveryVersion"] = installedRecoveryVersion();
-    update["available"] = updateState.available;
-    update["firmwareAvailable"] = updateState.firmwareAvailable;
-    update["recoveryAvailable"] = updateState.recoveryAvailable;
-    update["webAvailable"] = updateState.webAvailable;
-    update["version"] = updateState.version;
-    update["recoveryTargetVersion"] = updateState.recoveryVersion;
-    update["webTargetVersion"] = updateState.webVersion;
-    update["checking"] = updateState.checking;
-    update["approved"] = updateState.approved;
-    update["installing"] = updateState.installing;
-    update["downloading"] = updateState.downloading;
-    update["downloadQueued"] = updateState.downloadQueued;
-    update["downloaded"] = updateState.downloaded;
-    update["failed"] = updateState.failed;
-    update["channel"] = updateState.channel;
-    update["autoInstall"] = config.updateAutoInstall;
-    update["autoInstallTime"] = updateInstallTimeText();
-    update["message"] = updateState.message;
-    update["detail"] = updateState.detail;
-    update["progress"] = updateState.progress;
+    fillUpdateStatus(update);
     jsonResponse(200, doc);
   });
   web.on("/api/alarm-routing", HTTP_GET, [] {
@@ -1693,6 +1708,7 @@ void maintainMqtt() {
     mqtt.subscribe(topic.c_str(), 1);
     topic = root + "/update/approve";
     mqtt.subscribe(topic.c_str(), 1);
+    publishMioneStatus(true);
   } else {
     setMqttConnectionStatus(mqtt.state(), mqttErrorMessage(mqtt.state()), transport);
   }
@@ -1700,35 +1716,48 @@ void maintainMqtt() {
 
 void publishUpdateState() {
   if (!mqtt.connected()) return;
-  DynamicJsonDocument doc(768);
-  doc["currentVersion"] = BuildInfo::version;
-  doc["currentWebVersion"] = installedWebVersion();
-  doc["currentRecoveryVersion"] = installedRecoveryVersion();
-  doc["available"] = updateState.available;
-  doc["firmwareAvailable"] = updateState.firmwareAvailable;
-  doc["recoveryAvailable"] = updateState.recoveryAvailable;
-  doc["webAvailable"] = updateState.webAvailable;
-  doc["version"] = updateState.version;
-  doc["recoveryTargetVersion"] = updateState.recoveryVersion;
-  doc["webTargetVersion"] = updateState.webVersion;
-  doc["approved"] = updateState.approved;
-  doc["installing"] = updateState.installing;
-  doc["downloading"] = updateState.downloading;
-  doc["downloadQueued"] = updateState.downloadQueued;
-  doc["downloaded"] = updateState.downloaded;
-  doc["failed"] = updateState.failed;
-  doc["channel"] = updateState.channel;
-  doc["autoInstall"] = config.updateAutoInstall;
-  doc["autoInstallTime"] = updateInstallTimeText();
-  doc["message"] = updateState.message;
-  doc["detail"] = updateState.detail;
-  doc["progress"] = updateState.progress;
+  DynamicJsonDocument doc(1024);
+  fillUpdateStatus(doc.to<JsonObject>());
   String body;
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
   if (root.isEmpty()) return;
   String topic = root + "/update/status";
   mqtt.publish(topic.c_str(), body.c_str(), true);
+  publishMioneStatus(true);
+}
+
+String mioneStatusBody() {
+  DynamicJsonDocument doc(2048);
+  doc["type"] = "modemStatus";
+  doc["modemImei"] = modem.imei();
+  doc["online"] = true;
+  doc["modemConnected"] = modem.connected();
+  doc["packetDataConnected"] = modem.packetDataConnected();
+  doc["signalQuality"] = modem.signalQuality();
+  doc["networkOperator"] = modem.networkOperator();
+  doc["status"] = modem.connected() ? "Mobilfunk verbunden" : "Mobilfunk nicht verbunden";
+  doc["timestamp"] = clockText();
+  doc["uptimeSeconds"] = millis() / 1000;
+  doc["sequence"] = ++mioneStatusSequence;
+  JsonObject update = doc.createNestedObject("update");
+  fillUpdateStatus(update);
+  String body;
+  serializeJson(doc, body);
+  return body;
+}
+
+void publishMioneStatus(bool force) {
+  if (!mqtt.connected() || modem.imei().isEmpty()) return;
+  if (!force && millis() - lastMioneStatusPublish < 5000) return;
+  lastMioneStatusPublish = millis();
+  String body = mioneStatusBody();
+  String root = mqttDeviceRoot();
+  if (!root.isEmpty()) mqtt.publish((root + "/status").c_str(), body.c_str(), true);
+  if (!config.mqttUser.isEmpty()) {
+    String topic = config.mqttUser + "/MiOne/ModemStatus";
+    mqtt.publish(topic.c_str(), body.c_str(), true);
+  }
 }
 
 bool upDownButtonsPressed(int adcValue) {
@@ -2016,18 +2045,30 @@ void closeAlarmSocket() {
   if (activeAlarmSocket) activeAlarmSocket->stop();
   activeAlarmSocket = nullptr;
   alarmSocketInput = "";
+  lastSocketStatusPublish = 0;
+}
+
+void sendSocketModemStatus() {
+  if (!activeAlarmSocket || !activeAlarmSocket->connected()) return;
+  activeAlarmSocket->println(mioneStatusBody());
+  lastSocketStatusPublish = millis();
 }
 
 void processAlarmSocketLine(const String &line) {
   DynamicJsonDocument input(6144);
   DeserializationError parsed = deserializeJson(input, line);
-  DynamicJsonDocument response(768);
+  DynamicJsonDocument response(2048);
   response["type"] = "alarmResult";
   response["modemImei"] = modem.imei();
   String result;
   bool ok = false;
   if (parsed) {
     result = String("JSON ungueltig: ") + parsed.c_str();
+  } else if (String(input["type"] | "") == "statusRequest" ||
+             String(input["type"] | "") == "updateStatus") {
+    sendSocketModemStatus();
+    queueSystemLog("TCP_STATUS", "Status an MiOne gesendet");
+    return;
   } else if (input["mobile"].is<JsonArrayConst>()) {
     ok = alarmRouter.updateMobileSlots(input.as<JsonObjectConst>(), modem.imei(), result);
     response["type"] = "configResult";
@@ -2058,15 +2099,18 @@ void maintainOfflineTcp() {
     if (incomingWifi) {
       wifiAlarmClient = incomingWifi;
       activeAlarmSocket = &wifiAlarmClient;
+      lastSocketStatusPublish = 0;
     } else if (ethernetReady && ethernetAlarmServer) {
       EthernetClient incomingEthernet = ethernetAlarmServer->available();
       if (incomingEthernet) {
         ethernetAlarmClient = incomingEthernet;
         activeAlarmSocket = &ethernetAlarmClient;
+        lastSocketStatusPublish = 0;
       }
     }
   }
   if (!activeAlarmSocket) return;
+  if (lastSocketStatusPublish == 0 || millis() - lastSocketStatusPublish >= 5000) sendSocketModemStatus();
   while (activeAlarmSocket->available()) {
     char value = static_cast<char>(activeAlarmSocket->read());
     if (value == '\n') {
@@ -2268,6 +2312,7 @@ void loop() {
                         (ethernetReady && Ethernet.linkStatus() == LinkON);
   modem.maintainDataFallback(!primaryNetwork && millis() > 30000);
   maintainMqtt();
+  publishMioneStatus();
   maintainButtons();
   maintainUpdates();
   maintainClock();
