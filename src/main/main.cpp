@@ -114,6 +114,7 @@ struct UpdateState {
   bool approved = false;
   bool installing = false;
   bool downloading = false;
+  bool downloadQueued = false;
   bool failed = false;
   bool downloaded = false;
   String version;
@@ -1155,6 +1156,7 @@ void setupWeb() {
     update["approved"] = updateState.approved;
     update["installing"] = updateState.installing;
     update["downloading"] = updateState.downloading;
+    update["downloadQueued"] = updateState.downloadQueued;
     update["downloaded"] = updateState.downloaded;
     update["failed"] = updateState.failed;
     update["channel"] = updateState.channel;
@@ -1355,6 +1357,11 @@ void setupWeb() {
   web.on("/api/firmware/check", HTTP_POST, [] {
     if (!authorized()) return;
     updateCheckRequested = true;
+    updateState.failed = false;
+    updateState.checking = true;
+    updateState.message = "Firmwarepruefung wurde gestartet";
+    updateState.detail = "Manifest wird angefordert";
+    updateState.progress = 1;
     web.send(202, "application/json", "{\"ok\":true,\"checking\":true}");
   });
   web.on("/api/firmware/approve", HTTP_POST, [] {
@@ -1707,6 +1714,7 @@ void publishUpdateState() {
   doc["approved"] = updateState.approved;
   doc["installing"] = updateState.installing;
   doc["downloading"] = updateState.downloading;
+  doc["downloadQueued"] = updateState.downloadQueued;
   doc["downloaded"] = updateState.downloaded;
   doc["failed"] = updateState.failed;
   doc["channel"] = updateState.channel;
@@ -1763,6 +1771,18 @@ void maintainUpdates() {
     return;
   }
   if (updateState.installing || updateState.downloading || config.updateManifestUrl.isEmpty()) return;
+  if (updateState.downloadQueued) {
+    updateState.downloadQueued = false;
+    String error;
+    if (!downloadAvailableUpdateFiles(error)) {
+      updateState.failed = true;
+      showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
+    } else if (updateAutoInstallDue()) {
+      updateState.approved = true;
+    }
+    publishUpdateState();
+    return;
+  }
   uint32_t interval = static_cast<uint32_t>(config.updateCheckMinutes) * 60000UL;
   bool periodic = config.updateCheckEnabled && millis() > 30000 && (lastUpdateCheck == 0 || millis() - lastUpdateCheck >= interval);
   if (updateCheckRequested || periodic) {
@@ -1771,12 +1791,10 @@ void maintainUpdates() {
     String error;
     if (!checkUpdateManifest(error)) updateState.message = error;
     else if (updateState.available && !updateState.downloaded) {
-      if (!downloadAvailableUpdateFiles(error)) {
-        updateState.failed = true;
-        showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
-      } else if (updateAutoInstallDue()) {
-        updateState.approved = true;
-      }
+      updateState.downloadQueued = true;
+      updateState.message = "Download wird vorbereitet";
+      updateState.detail = "Firmwaredateien werden gleich geladen";
+      updateState.progress = 3;
     } else if (updateState.available && updateState.downloaded && updateAutoInstallDue()) {
       updateState.approved = true;
     }
