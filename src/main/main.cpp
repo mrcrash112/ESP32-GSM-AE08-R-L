@@ -68,6 +68,7 @@ File uploadFile;
 String uploadPath;
 uint32_t lastMqttAttempt = 0;
 uint32_t mqttConnectWindowStartedAt = 0;
+uint32_t lastCellularMqttErrorAt = 0;
 uint32_t lastMioneStatusPublish = 0;
 uint32_t lastSocketStatusPublish = 0;
 uint32_t mioneStatusSequence = 0;
@@ -163,6 +164,8 @@ bool updateNetworkReady();
 String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
 String mqttDeviceRoot();
+bool mqttConnectedAny();
+bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress);
@@ -1343,7 +1346,7 @@ void fillDigitalInputStatus(JsonArray out) {
 }
 
 void publishDigitalInputsStatus(bool retain = true) {
-  if (!mqtt.connected() || modem.imei().isEmpty()) return;
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
   DynamicJsonDocument doc(1024);
   doc["type"] = "digitalInputs";
   doc["modemImei"] = modem.imei();
@@ -1352,8 +1355,8 @@ void publishDigitalInputsStatus(bool retain = true) {
   String body;
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
-  if (!root.isEmpty()) mqtt.publish((root + "/inputs/status").c_str(), body.c_str(), retain);
-  if (!config.mqttUser.isEmpty()) mqtt.publish((config.mqttUser + "/MiOne/InputStatus").c_str(), body.c_str(), retain);
+  if (!root.isEmpty()) publishMqttTopic(root + "/inputs/status", body, retain);
+  if (!config.mqttUser.isEmpty()) publishMqttTopic(config.mqttUser + "/MiOne/InputStatus", body, retain);
 }
 
 void sendInputAlarm(uint8_t index) {
@@ -1469,7 +1472,7 @@ void maintainSystemLog(bool force = false) {
                   ",operator=" + modem.networkOperator() +
                   ",registered=" + String(modem.connected() ? 1 : 0) +
                   ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
-                  ",mqtt=" + String(mqtt.connected() ? 1 : 0) +
+                  ",mqtt=" + String(mqttConnectedAny() ? 1 : 0) +
                   ",sd=1,rtc=" + String(rtcReady ? 1 : 0) +
                   ",buttonAvg=" + String(currentButtonAdc) +
                   ",heap=" + String(ESP.getFreeHeap());
@@ -1569,9 +1572,9 @@ void setupWeb() {
     doc["rtc"] = rtcReady;
     doc["cellular"] = modem.connected();
     doc["signal"] = modem.signalQuality();
-    doc["mqtt"] = mqtt.connected();
+    doc["mqtt"] = mqttConnectedAny();
     JsonObject mqttConnection = doc.createNestedObject("mqttConnection");
-    mqttConnection["connected"] = mqtt.connected();
+    mqttConnection["connected"] = mqttConnectedAny();
     mqttConnection["code"] = mqttConnectionCode;
     mqttConnection["message"] = mqttConnectionMessage;
     mqttConnection["transport"] = mqttConnectionTransport;
@@ -1934,7 +1937,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
       response["message"] = result;
       String body;
       serializeJson(response, body);
-      mqtt.publish((root + "/mobile/result").c_str(), body.c_str(), false);
+      publishMqttTopic(root + "/mobile/result", body, false);
     }
     return;
   }
@@ -1955,7 +1958,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
       response["message"] = result;
       String body;
       serializeJson(response, body);
-      mqtt.publish((root + "/mobile/result").c_str(), body.c_str(), false);
+      publishMqttTopic(root + "/mobile/result", body, false);
     }
     return;
   }
@@ -1983,7 +1986,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
       response["message"] = result;
       String body;
       serializeJson(response, body);
-      mqtt.publish((root + "/alarms/result").c_str(), body.c_str(), false);
+      publishMqttTopic(root + "/alarms/result", body, false);
     }
     return;
   }
@@ -2010,7 +2013,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
       if (ok) updateState.approved = true;
     }
     String resultTopic = root + "/update/result";
-    mqtt.publish(resultTopic.c_str(), ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"nicht autorisiert oder kein Update\"}", false);
+    publishMqttTopic(resultTopic, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"nicht autorisiert oder kein Update\"}", false);
     return;
   }
   if (incoming == configTopic) {
@@ -2043,7 +2046,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     String body;
     serializeJson(response, body);
     String resultTopic = root + "/app/config/result";
-    mqtt.publish(resultTopic.c_str(), body.c_str(), false);
+    publishMqttTopic(resultTopic, body, false);
     if (applied) restartAt = millis() + 1000;
     return;
   }
@@ -2073,6 +2076,23 @@ String mqttErrorMessage(int state) {
   }
 }
 
+bool mqttConnectedAny() {
+  return mqtt.connected() || modem.mqttConnected();
+}
+
+bool publishMqttTopic(const String &topic, const String &body, bool retain) {
+  if (topic.isEmpty()) return false;
+  if (mqtt.connected()) return mqtt.publish(topic.c_str(), body.c_str(), retain);
+  if (!modem.mqttConnected()) return false;
+  String error;
+  bool ok = modem.mqttPublish(topic, body, retain, error);
+  if (!ok && millis() - lastCellularMqttErrorAt > 30000) {
+    lastCellularMqttErrorAt = millis();
+    setMqttConnectionStatus(-18, error, "Mobilfunk");
+  }
+  return ok;
+}
+
 void maintainMqtt() {
   if (!config.mqttEnabled && config.mqttHost.isEmpty()) {
     mqttConnectWindowStartedAt = 0;
@@ -2085,6 +2105,9 @@ void maintainMqtt() {
     setMqttConnectionStatus(-11, "Broker oder Hostname fehlt");
     return;
   }
+  bool wifiUp = WiFi.status() == WL_CONNECTED;
+  bool ethernetUp = ethernetReady && Ethernet.linkStatus() == LinkON;
+  if ((wifiUp || ethernetUp) && modem.mqttConnected()) modem.mqttDisconnect();
   if (mqtt.connected()) {
     mqttConnectWindowStartedAt = 0;
     String transport = ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "WLAN";
@@ -2102,17 +2125,51 @@ void maintainMqtt() {
     }
     return;
   }
-  bool wifiUp = WiFi.status() == WL_CONNECTED;
-  bool ethernetUp = ethernetReady && Ethernet.linkStatus() == LinkON;
   String root = mqttDeviceRoot();
-  if (!wifiUp && !ethernetUp) {
-    mqttConnectWindowStartedAt = 0;
-    setMqttConnectionStatus(-12, "Keine WLAN- oder Ethernetverbindung");
-    return;
-  }
   if (root.isEmpty()) {
     mqttConnectWindowStartedAt = 0;
     setMqttConnectionStatus(-13, "Modem-IMEI fuer das MQTT-Topic fehlt");
+    return;
+  }
+  if (!wifiUp && !ethernetUp) {
+    modem.maintainDataFallback(true);
+    if (modem.mqttConnected()) {
+      mqttConnectWindowStartedAt = 0;
+      setMqttConnectionStatus(MQTT_CONNECTED,
+                              config.mqttEnabled ? "MQTT ueber Mobilfunk verbunden, Empfang nicht aktiv" :
+                                                   "MQTT-Statusmeldungen ueber Mobilfunk aktiv",
+                              "Mobilfunk");
+      return;
+    }
+    if (!modem.packetDataConnected()) {
+      mqttConnectWindowStartedAt = 0;
+      setMqttConnectionStatus(-12, "Keine WLAN-, Ethernet- oder Mobilfunk-Datenverbindung");
+      return;
+    }
+    if (mqttConnectWindowStartedAt == 0) mqttConnectWindowStartedAt = millis();
+    if (millis() - lastMqttAttempt < 10000) return;
+    lastMqttAttempt = millis();
+    String clientId = config.deviceId + "-" + modem.imei().substring(9);
+    String error;
+    bool connected = modem.mqttConnect(config.mqttHost, config.mqttPort, clientId,
+                                       config.mqttUser, config.mqttPassword, error);
+    if (connected) {
+      mqttConnectWindowStartedAt = 0;
+      mqttMobileSubscriptionReady = false;
+      mqttMobileSyncMessage = config.mqttEnabled ?
+          "Mobilfunk-MQTT sendet Statusmeldungen; MQTT-Empfang ueber Mobilfunk ist nicht aktiv" :
+          "MQTT-Empfang deaktiviert; es werden nur Statusmeldungen gesendet";
+      setMqttConnectionStatus(MQTT_CONNECTED,
+                              config.mqttEnabled ? "MQTT ueber Mobilfunk verbunden, Empfang nicht aktiv" :
+                                                   "MQTT-Statusmeldungen ueber Mobilfunk aktiv",
+                              "Mobilfunk");
+      String online = "{\"online\":true,\"imei\":\"" + modem.imei() + "\"}";
+      publishMqttTopic(root + "/status", online, true);
+      publishMioneStatus(true);
+      publishDigitalInputsStatus(true);
+    } else {
+      setMqttConnectionStatus(-17, error, "Mobilfunk");
+    }
     return;
   }
   if (mqttConnectWindowStartedAt == 0) mqttConnectWindowStartedAt = millis();
@@ -2139,7 +2196,7 @@ void maintainMqtt() {
                                                  "MQTT-Statusmeldungen aktiv, Empfang deaktiviert",
                             transport);
     String online = "{\"online\":true,\"imei\":\"" + modem.imei() + "\"}";
-    mqtt.publish(willTopic.c_str(), online.c_str(), true);
+    publishMqttTopic(willTopic, online, true);
     String topic;
     mqttMobileSubscriptionReady = false;
     if (config.mqttEnabled && !config.mqttUser.isEmpty()) {
@@ -2182,7 +2239,7 @@ void maintainMqtt() {
 }
 
 void publishUpdateState() {
-  if (!mqtt.connected()) return;
+  if (!mqttConnectedAny()) return;
   DynamicJsonDocument doc(1024);
   fillUpdateStatus(doc.to<JsonObject>());
   String body;
@@ -2190,7 +2247,7 @@ void publishUpdateState() {
   String root = mqttDeviceRoot();
   if (root.isEmpty()) return;
   String topic = root + "/update/status";
-  mqtt.publish(topic.c_str(), body.c_str(), true);
+  publishMqttTopic(topic, body, true);
   publishMioneStatus(true);
 }
 
@@ -2216,15 +2273,15 @@ String mioneStatusBody() {
 }
 
 void publishMioneStatus(bool force) {
-  if (!mqtt.connected() || modem.imei().isEmpty()) return;
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
   if (!force && millis() - lastMioneStatusPublish < 5000) return;
   lastMioneStatusPublish = millis();
   String body = mioneStatusBody();
   String root = mqttDeviceRoot();
-  if (!root.isEmpty()) mqtt.publish((root + "/status").c_str(), body.c_str(), true);
+  if (!root.isEmpty()) publishMqttTopic(root + "/status", body, true);
   if (!config.mqttUser.isEmpty()) {
     String topic = config.mqttUser + "/MiOne/ModemStatus";
-    mqtt.publish(topic.c_str(), body.c_str(), true);
+    publishMqttTopic(topic, body, true);
   }
 }
 
@@ -2468,9 +2525,9 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 
 void sendAlarmProgress(const String &body) {
   if (!config.alarmProgressEnabled) return;
-  if (mqtt.connected() && !config.mqttUser.isEmpty()) {
+  if (mqttConnectedAny() && !config.mqttUser.isEmpty()) {
     String topic = config.mqttUser + "/MiOne/AlarmStatus";
-    mqtt.publish(topic.c_str(), body.c_str(), false);
+    publishMqttTopic(topic, body, false);
   }
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
 }
@@ -2694,7 +2751,7 @@ void updateDisplay() {
   drawSignalBars(24, 47, cellularSignalLevel());
   display.setCursor(57, 38);
   display.print("MQTT");
-  drawStatusMark(92, 37, mqtt.connected());
+  drawStatusMark(92, 37, mqttConnectedAny());
 
   refreshDisplayVersions();
   display.setCursor(0, 48);

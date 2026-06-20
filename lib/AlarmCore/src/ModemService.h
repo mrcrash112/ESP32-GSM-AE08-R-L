@@ -12,10 +12,15 @@ class ModemService {
   bool getNetworkTime(String &response);
   bool downloadToFile(const String &url, const char *path, String &error);
   bool restoreFactoryDefaults(String &error);
+  bool mqttConnect(const String &host, uint16_t port, const String &clientId,
+                   const String &user, const String &password, String &error);
+  bool mqttPublish(const String &topic, const String &payload, bool retain, String &error);
+  void mqttDisconnect();
   bool sendSms(const String &number, const String &message);
   bool ring(const String &number, uint16_t seconds);
   bool connected() const { return registered_; }
   bool packetDataConnected() const { return packetDataConnected_; }
+  bool mqttConnected() const { return mqttConnected_; }
   int signalQuality() const { return signalQuality_; }
   String modemName() const { return modemName_; }
   String model() const { return modemType_; }
@@ -30,6 +35,14 @@ class ModemService {
   bool readBinaryToFile(const char *path, size_t size, String &error);
   bool downloadEc25(const String &url, const char *path, String &error);
   bool downloadSim7500(const String &url, const char *path, String &error);
+  bool mqttConnectEc25(const String &host, uint16_t port, const String &clientId,
+                       const String &user, const String &password, String &error);
+  bool mqttPublishEc25(const String &topic, const String &payload, bool retain, String &error);
+  bool mqttConnectSim7500(const String &host, uint16_t port, const String &clientId,
+                          const String &user, const String &password, String &error);
+  bool mqttPublishSim7500(const String &topic, const String &payload, bool retain, String &error);
+  bool writePromptPayload(const String &command, const String &payload, String &answer,
+                          uint32_t promptTimeout = 10000, uint32_t finalTimeout = 10000);
   void pollStatus();
 
   HardwareSerial serial_{2};
@@ -46,4 +59,6 @@ class ModemService {
   String apnPassword_;
   uint32_t lastPoll_ = 0;
   uint32_t lastDataAttempt_ = 0;
+  bool mqttConnected_ = false;
+  bool simMqttStarted_ = false;
 };

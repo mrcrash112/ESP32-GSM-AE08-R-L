@@ -48,6 +48,14 @@ int simReadSize(const String &answer) {
   value.trim();
   return value.toInt();
 }
+
+String mqttSafe(String value) {
+  value.replace("\\", "\\\\");
+  value.replace("\"", "\\\"");
+  value.replace("\r", " ");
+  value.replace("\n", " ");
+  return value;
+}
 }  // namespace
 
 void ModemService::begin(const DeviceConfig &config) {
@@ -123,9 +131,51 @@ bool ModemService::downloadToFile(const String &url, const char *path, String &e
   return false;
 }
 
+bool ModemService::mqttConnect(const String &host, uint16_t port, const String &clientId,
+                               const String &user, const String &password, String &error) {
+  if (!enabled_ || !registered_ || modemType_.isEmpty()) { error = "Mobilfunkmodem ist nicht bereit"; return false; }
+  if (host.isEmpty() || port == 0 || clientId.isEmpty()) { error = "MQTT-Zugangsdaten fuer Mobilfunk sind unvollstaendig"; return false; }
+  maintainDataFallback(true);
+  if (!packetDataConnected_) { error = "Mobilfunk-Datenkontext ist nicht aktiv"; return false; }
+  if (mqttConnected_) return true;
+  if (modemType_ == "EC25") return mqttConnectEc25(host, port, clientId, user, password, error);
+  if (modemType_ == "SIM7500") return mqttConnectSim7500(host, port, clientId, user, password, error);
+  error = "Modemtyp fuer Mobilfunk-MQTT nicht unterstuetzt";
+  return false;
+}
+
+bool ModemService::mqttPublish(const String &topic, const String &payload, bool retain, String &error) {
+  if (!mqttConnected_) { error = "Mobilfunk-MQTT ist nicht verbunden"; return false; }
+  if (topic.isEmpty() || payload.length() > 4096) { error = "MQTT-Nachricht ist ungueltig oder zu gross"; return false; }
+  if (modemType_ == "EC25") return mqttPublishEc25(topic, payload, retain, error);
+  if (modemType_ == "SIM7500") return mqttPublishSim7500(topic, payload, retain, error);
+  error = "Modemtyp fuer Mobilfunk-MQTT nicht unterstuetzt";
+  mqttConnected_ = false;
+  return false;
+}
+
+void ModemService::mqttDisconnect() {
+  if (!enabled_ || modemType_.isEmpty()) {
+    mqttConnected_ = false;
+    return;
+  }
+  if (modemType_ == "EC25") {
+    command("AT+QMTDISC=0", "OK", 5000);
+    command("AT+QMTCLOSE=0", "OK", 5000);
+  } else if (modemType_ == "SIM7500") {
+    command("AT+CMQTTDISC=0,60", "OK", 10000);
+    command("AT+CMQTTREL=0", "OK", 5000);
+    command("AT+CMQTTSTOP", "OK", 5000);
+    simMqttStarted_ = false;
+  }
+  mqttConnected_ = false;
+}
+
 bool ModemService::restoreFactoryDefaults(String &error) {
   if (!enabled_ || modemType_.isEmpty()) { error = "Mobilfunkmodem ist nicht bereit"; return false; }
   packetDataConnected_ = false;
+  mqttConnected_ = false;
+  simMqttStarted_ = false;
   while (serial_.available()) serial_.read();
   if (!command("AT", "OK", 3000)) { error = "Modem antwortet nicht"; return false; }
   if (!command("AT&F", "OK", 10000)) { error = "Factory-Defaults wurden vom Modem nicht angenommen"; return false; }
@@ -242,6 +292,104 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
   }
   String trailer;
   waitFor("OK", trailer, 10000);
+  return true;
+}
+
+bool ModemService::writePromptPayload(const String &commandText, const String &payload, String &answer,
+                                      uint32_t promptTimeout, uint32_t finalTimeout) {
+  while (serial_.available()) serial_.read();
+  serial_.println(commandText);
+  answer = readUntil(promptTimeout);
+  if (answer.indexOf('>') < 0) return false;
+  serial_.print(payload);
+  answer = readUntil(finalTimeout);
+  return answer.indexOf("OK") >= 0;
+}
+
+bool ModemService::mqttConnectEc25(const String &host, uint16_t port, const String &clientId,
+                                   const String &user, const String &password, String &error) {
+  mqttDisconnect();
+  command("AT+QMTCFG=\"recv/mode\",0,0,1", "OK", 3000);
+  String answer;
+  serial_.println("AT+QMTOPEN=0,\"" + mqttSafe(host) + "\"," + String(port));
+  if (!waitForLine("+QMTOPEN:", answer, 65000) || answer.indexOf("+QMTOPEN: 0,0") < 0) {
+    error = "EC25 MQTT OPEN fehlgeschlagen";
+    mqttConnected_ = false;
+    return false;
+  }
+  String connect = "AT+QMTCONN=0,\"" + mqttSafe(clientId) + "\"";
+  if (!user.isEmpty()) connect += ",\"" + mqttSafe(user) + "\",\"" + mqttSafe(password) + "\"";
+  serial_.println(connect);
+  if (!waitForLine("+QMTCONN:", answer, 30000) ||
+      (answer.indexOf("+QMTCONN: 0,0,0") < 0 && answer.indexOf("+QMTCONN: 0,0") < 0)) {
+    error = "EC25 MQTT CONN fehlgeschlagen";
+    mqttDisconnect();
+    return false;
+  }
+  mqttConnected_ = true;
+  return true;
+}
+
+bool ModemService::mqttPublishEc25(const String &topic, const String &payload, bool retain, String &error) {
+  String answer;
+  String commandText = "AT+QMTPUBEX=0,0,0," + String(retain ? 1 : 0) + ",\"" + mqttSafe(topic) + "\"," + String(payload.length());
+  if (!writePromptPayload(commandText, payload, answer, 10000, 20000) ||
+      (answer.indexOf("+QMTPUBEX: 0,0,0") < 0 && answer.indexOf("OK") < 0)) {
+    error = "EC25 MQTT Publish fehlgeschlagen";
+    mqttConnected_ = false;
+    return false;
+  }
+  return true;
+}
+
+bool ModemService::mqttConnectSim7500(const String &host, uint16_t port, const String &clientId,
+                                      const String &user, const String &password, String &error) {
+  mqttDisconnect();
+  String answer;
+  if (!simMqttStarted_) {
+    serial_.println("AT+CMQTTSTART");
+    if (!waitForLine("+CMQTTSTART:", answer, 30000) || answer.indexOf("+CMQTTSTART: 0") < 0) {
+      error = "SIM7500 MQTT START fehlgeschlagen";
+      simMqttStarted_ = false;
+      return false;
+    }
+    simMqttStarted_ = true;
+  }
+  if (!command("AT+CMQTTACCQ=0,\"" + mqttSafe(clientId) + "\",0", "OK", 10000)) {
+    error = "SIM7500 MQTT Client konnte nicht angelegt werden";
+    mqttDisconnect();
+    return false;
+  }
+  String connect = "AT+CMQTTCONNECT=0,\"tcp://" + mqttSafe(host) + ":" + String(port) + "\",60,1";
+  if (!user.isEmpty()) connect += ",\"" + mqttSafe(user) + "\",\"" + mqttSafe(password) + "\"";
+  serial_.println(connect);
+  if (!waitForLine("+CMQTTCONNECT:", answer, 65000) || answer.indexOf("+CMQTTCONNECT: 0,0") < 0) {
+    error = "SIM7500 MQTT CONNECT fehlgeschlagen";
+    mqttDisconnect();
+    return false;
+  }
+  mqttConnected_ = true;
+  return true;
+}
+
+bool ModemService::mqttPublishSim7500(const String &topic, const String &payload, bool retain, String &error) {
+  String answer;
+  if (!writePromptPayload("AT+CMQTTTOPIC=0," + String(topic.length()), topic, answer, 10000, 10000)) {
+    error = "SIM7500 MQTT Topic wurde nicht angenommen";
+    mqttConnected_ = false;
+    return false;
+  }
+  if (!writePromptPayload("AT+CMQTTPAYLOAD=0," + String(payload.length()), payload, answer, 10000, 10000)) {
+    error = "SIM7500 MQTT Payload wurde nicht angenommen";
+    mqttConnected_ = false;
+    return false;
+  }
+  serial_.println("AT+CMQTTPUB=0,0," + String(retain ? 1 : 0) + ",60");
+  if (!waitForLine("+CMQTTPUB:", answer, 30000) || answer.indexOf("+CMQTTPUB: 0,0") < 0) {
+    error = "SIM7500 MQTT Publish fehlgeschlagen";
+    mqttConnected_ = false;
+    return false;
+  }
   return true;
 }
 
