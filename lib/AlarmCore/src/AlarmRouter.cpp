@@ -83,6 +83,23 @@ const char *deliveryName(AlarmDelivery delivery) {
   }
 }
 
+String phoneText(const String &number) { return number.isEmpty() ? "leer" : number; }
+
+String timeText(uint32_t seconds) {
+  if (seconds >= 86400) seconds = 0;
+  char value[9];
+  snprintf(value, sizeof(value), "%02lu:%02lu:%02lu",
+           static_cast<unsigned long>(seconds / 3600),
+           static_cast<unsigned long>((seconds % 3600) / 60),
+           static_cast<unsigned long>(seconds % 60));
+  return value;
+}
+
+void appendChange(String &changes, const String &change) {
+  if (!changes.isEmpty()) changes += " | ";
+  changes += change;
+}
+
 String normalizePriority(JsonObjectConst alarm) {
   String value = firstString(alarm, "priority", "Priority", "alarmType", "AlarmType");
   if (value.isEmpty()) value = firstString(alarm, "type", "Typ");
@@ -105,7 +122,8 @@ void AlarmRouter::begin() {
 }
 
 bool AlarmRouter::updateMobileSlots(JsonObjectConst payload, const String &expectedImei,
-                                    String &result) {
+                                    String &result, bool *changed) {
+  if (changed) *changed = false;
   String payloadImei = payload["modemImei"] | "";
   if (expectedImei.isEmpty() || payloadImei != expectedImei) {
     result = "Modem-IMEI der MiOne-Konfiguration stimmt nicht";
@@ -154,14 +172,45 @@ bool AlarmRouter::updateMobileSlots(JsonObjectConst payload, const String &expec
     result = "MiOne-Konfiguration enthaelt keine gueltigen Slots";
     return false;
   }
+  String changes;
   for (uint8_t i = 0; i < 5; ++i) {
-    slots_[i] = found[i] ? imported[i] : MobileSlot();
+    MobileSlot next = found[i] ? imported[i] : MobileSlot();
+    MobileSlot &current = slots_[i];
+    if (current.active == next.active && current.number == next.number &&
+        current.delivery == next.delivery) continue;
+    String detail = "Slot " + String(i + 1) + ":";
+    bool hasDetail = false;
+    if (current.number != next.number) {
+      detail += " Nummer " + phoneText(current.number) + " -> " + phoneText(next.number);
+      hasDetail = true;
+    }
+    if (current.active != next.active) {
+      detail += String(hasDetail ? "," : "") + " Aktiv " +
+                (current.active ? "ja" : "nein") + " -> " + (next.active ? "ja" : "nein");
+      hasDetail = true;
+    }
+    if (current.delivery != next.delivery) {
+      detail += String(hasDetail ? "," : "") + " Alarmierung " +
+                deliveryName(current.delivery) + " -> " + deliveryName(next.delivery);
+    }
+    appendChange(changes, detail);
+    current = next;
     saveSlot(i);
   }
-  technicalFrom_ = importedFrom;
-  technicalUntil_ = importedUntil;
-  saveTechnicalWindow();
-  result = String(count) + " Mobile Slots aus MiOne gespeichert";
+  if (technicalFrom_ != importedFrom || technicalUntil_ != importedUntil) {
+    appendChange(changes, "Technical-Zeitfenster: " + timeText(technicalFrom_) + "-" +
+                              timeText(technicalUntil_) + " -> " + timeText(importedFrom) + "-" +
+                              timeText(importedUntil));
+    technicalFrom_ = importedFrom;
+    technicalUntil_ = importedUntil;
+    saveTechnicalWindow();
+  }
+  if (changes.isEmpty()) {
+    result = "Keine Aenderung; " + String(count) + " Mobile Slots geprueft";
+  } else {
+    result = changes;
+    if (changed) *changed = true;
+  }
   return true;
 }
 

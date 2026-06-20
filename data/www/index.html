@@ -168,7 +168,11 @@
             <label><span>Prüfintervall</span><select id="updateCheckMinutes"><option value="15">Alle 15 Minuten</option><option value="60">Stündlich</option><option value="360">Alle 6 Stunden</option><option value="720">Alle 12 Stunden</option><option value="1440">Täglich</option><option value="10080">Wöchentlich</option></select></label>
           </div>
           <div class="update-panel">
-            <div><span>Installierte Version</span><strong id="currentFirmware">–</strong><small id="updateMessage">Noch nicht geprüft</small></div>
+            <div class="installed-versions">
+              <div><span>Hauptprogramm</span><strong id="currentFirmware">–</strong><small id="firmwareUpdateState">Status wird geprüft</small></div>
+              <div><span>Minimalprogramm / Recovery</span><strong id="currentRecovery">–</strong><small id="recoveryUpdateState">Status wird geprüft</small></div>
+              <small id="updateMessage">Noch nicht geprüft</small>
+            </div>
             <div class="actions"><button type="button" class="button secondary" id="checkUpdate">Jetzt prüfen</button><button type="button" class="button warning" id="approveUpdate" hidden>Update bestätigen</button></div>
           </div>
         </section>
@@ -185,7 +189,7 @@
           <div class="file-list" id="fileList"><p class="empty">Dateiliste wird geladen …</p></div>
         </section>
 
-        <div class="savebar">
+        <div class="savebar" id="saveBar" hidden>
           <div><strong>Änderungen speichern?</strong><span>Das Gerät startet anschließend neu.</span></div>
           <button class="button primary" type="submit" id="saveButton">Konfiguration speichern</button>
         </div>

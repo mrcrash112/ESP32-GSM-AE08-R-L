@@ -1,11 +1,11 @@
 #pragma once
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "0.1.2"
+#define FIRMWARE_VERSION "0.1.8"
 #endif
 
 #ifndef RECOVERY_VERSION
-#define RECOVERY_VERSION "0.1.0"
+#define RECOVERY_VERSION "0.1.3"
 #endif
 
 namespace BuildInfo {

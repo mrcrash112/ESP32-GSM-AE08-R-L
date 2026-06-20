@@ -101,14 +101,18 @@ String modemActivityNumber;
 uint32_t modemActivityUntil = 0;
 String pendingSystemLog;
 uint32_t lastSystemLogWrite = 0;
+uint32_t lastUpdateDisplayAt = 0;
 
 void queueSystemLog(const String &event, const String &details);
 
 struct UpdateState {
   bool available = false;
+  bool firmwareAvailable = false;
+  bool recoveryAvailable = false;
   bool checking = false;
   bool approved = false;
   bool installing = false;
+  bool failed = false;
   String version;
   String firmwareUrl;
   String firmwareMd5;
@@ -119,7 +123,11 @@ struct UpdateState {
   String webUrl;
   String webMd5;
   String message;
+  String detail;
+  uint8_t progress = 0;
 } updateState;
+
+void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
 
 String chipId() {
   uint64_t mac = ESP.getEfuseMac();
@@ -170,12 +178,22 @@ String installedRecoveryVersion() {
   return version;
 }
 
+void setInstalledRecoveryVersion(const String &version) {
+  if (version.isEmpty()) return;
+  Preferences prefs;
+  if (prefs.begin("fw-update", false)) {
+    prefs.putString("recoveryVersion", version);
+    prefs.end();
+  }
+}
+
 bool checkUpdateManifest(String &error) {
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
   if (WiFi.status() != WL_CONNECTED) { error = "Update-Pruefung benoetigt WLAN"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
   updateState.checking = true;
   updateState.message = "Pruefe GitHub";
+  showUpdateStatus("Manifest pruefen", "GitHub wird kontaktiert", 2);
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
@@ -200,28 +218,27 @@ bool checkUpdateManifest(String &error) {
   String firmwareMd5 = firmware["md5"] | manifest["md5"] | "";
   firmwareMd5.toLowerCase();
   if (version.isEmpty() || !githubUrl(firmwareUrl) || !validMd5(firmwareMd5)) { error = "Firmware-Angaben im Manifest fehlen"; return false; }
-  if (!newerVersion(version, BuildInfo::version)) {
-    updateState.available = false;
-    updateState.message = "Firmware ist aktuell";
-    return true;
-  }
+  bool firmwareAvailable = newerVersion(version, BuildInfo::version);
   JsonObjectConst recovery = manifest["recovery"];
   String recoveryUrl = recovery["url"] | "";
   String recoveryMd5 = recovery["md5"] | "";
   recoveryMd5.toLowerCase();
   String recoveryVersion = recovery["version"] | "";
   if (!recoveryVersion.isEmpty() && (!githubUrl(recoveryUrl) || !validMd5(recoveryMd5))) { error = "Recovery-Angaben im Manifest sind ungueltig"; return false; }
+  bool recoveryAvailable = !recoveryVersion.isEmpty() && newerVersion(recoveryVersion, installedRecoveryVersion());
   JsonObjectConst webPackage = manifest["web"];
   String webVersion = webPackage["version"] | "";
   String webUrl = webPackage["url"] | "";
   String webMd5 = webPackage["md5"] | "";
   String webFormat = webPackage["format"] | "";
   webMd5.toLowerCase();
-  if (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5)) {
+  if (firmwareAvailable && (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5))) {
     error = "Passendes WWW-Paket fehlt oder ist ungueltig";
     return false;
   }
-  updateState.available = true;
+  updateState.firmwareAvailable = firmwareAvailable;
+  updateState.recoveryAvailable = recoveryAvailable;
+  updateState.available = firmwareAvailable || recoveryAvailable;
   updateState.version = version;
   updateState.firmwareUrl = firmwareUrl;
   updateState.firmwareMd5 = firmwareMd5;
@@ -231,11 +248,16 @@ bool checkUpdateManifest(String &error) {
   updateState.webVersion = webVersion;
   updateState.webUrl = webUrl;
   updateState.webMd5 = webMd5;
-  updateState.message = "Update " + version + " verfuegbar";
+  if (firmwareAvailable && recoveryAvailable) updateState.message = "Firmware " + version + " und Recovery " + recoveryVersion + " verfuegbar";
+  else if (firmwareAvailable) updateState.message = "Firmware " + version + " verfuegbar";
+  else if (recoveryAvailable) updateState.message = "Recovery " + recoveryVersion + " verfuegbar";
+  else updateState.message = "Firmware und Recovery sind aktuell";
   return true;
 }
 
-bool downloadToSd(const String &url, const char *path, const String &expectedMd5, String &error) {
+bool downloadToSd(const String &url, const char *path, const String &expectedMd5,
+                  const String &label, uint8_t progressFrom, uint8_t progressTo,
+                  String &error) {
   if (!githubUrl(url) || !validMd5(expectedMd5)) { error = "Download-Angaben ungueltig"; return false; }
   WiFiClientSecure tls;
   tls.setInsecure();
@@ -246,10 +268,45 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   if (status != HTTP_CODE_OK) { request.end(); error = "Download HTTP " + String(status); return false; }
   SD.remove(path);
   File target = SD.open(path, FILE_WRITE);
-  int written = target ? request.writeToStream(&target) : -1;
+  if (!target) { request.end(); error = "Download-Datei konnte nicht erstellt werden"; return false; }
+  WiFiClient *stream = request.getStreamPtr();
+  int total = request.getSize();
+  size_t written = 0;
+  uint32_t lastData = millis();
+  uint8_t buffer[1024];
+  showUpdateStatus(label, total > 0 ? "0 / " + String(total / 1024) + " KB" : "Verbindung steht", progressFrom);
+  while ((request.connected() || stream->available()) &&
+         (total < 0 || written < static_cast<size_t>(total))) {
+    size_t available = stream->available();
+    if (available) {
+      size_t count = min(available, sizeof(buffer));
+      int received = stream->readBytes(buffer, count);
+      if (received <= 0 || target.write(buffer, received) != static_cast<size_t>(received)) {
+        error = "Download konnte nicht gespeichert werden";
+        break;
+      }
+      written += received;
+      lastData = millis();
+    } else if (millis() - lastData > 15000) {
+      error = "Download-Zeitueberschreitung";
+      break;
+    } else {
+      delay(10);
+    }
+    uint8_t percent = total > 0 ? min<uint32_t>(100, written * 100UL / total) : 0;
+    uint8_t overall = total > 0 ? progressFrom + (progressTo - progressFrom) * percent / 100 : progressFrom;
+    String amount = String(written / 1024) + " KB";
+    if (total > 0) amount += " / " + String(total / 1024) + " KB";
+    showUpdateStatus(label, amount, overall);
+  }
   target.close();
   request.end();
-  if (written <= 0) { SD.remove(path); error = "Download konnte nicht gespeichert werden"; return false; }
+  if (!error.isEmpty() || written == 0 || (total > 0 && written != static_cast<size_t>(total))) {
+    SD.remove(path);
+    if (error.isEmpty()) error = "Download ist unvollstaendig";
+    return false;
+  }
+  showUpdateStatus(label, "MD5 wird geprueft", progressTo);
   File check = SD.open(path, FILE_READ);
   MD5Builder md5;
   md5.begin();
@@ -325,6 +382,8 @@ bool stageWebPackage(String &error) {
   uint8_t header[512];
   uint8_t data[1024];
   uint16_t files = 0;
+  size_t archiveSize = archive.size();
+  showUpdateStatus("Webdateien", "Paket wird entpackt", 72);
   while (archive.available()) {
     if (archive.read(header, sizeof(header)) != sizeof(header)) { error = "WWW-TAR-Header ist unvollstaendig"; break; }
     bool empty = true;
@@ -358,6 +417,8 @@ bool stageWebPackage(String &error) {
     }
     uint16_t padding = (512 - (size % 512)) % 512;
     if (padding && !archive.seek(archive.position() + padding)) { error = "WWW-TAR-Padding ist ungueltig"; break; }
+    uint8_t progress = archiveSize ? 72 + min<size_t>(10, archive.position() * 10 / archiveSize) : 72;
+    showUpdateStatus("Webdateien", String(files) + " Dateien entpackt", progress);
   }
   archive.close();
   if (!error.isEmpty() || files == 0 || !SD.exists("/www-new/index.html") ||
@@ -465,6 +526,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
   image.seek(0);
   size_t imageSize = image.size();
   size_t eraseSize = (imageSize + SPI_FLASH_SEC_SIZE - 1) & ~(SPI_FLASH_SEC_SIZE - 1);
+  showUpdateStatus("Recovery", "Flash wird geloescht", 19);
   if (esp_partition_erase_range(factory, 0, eraseSize) != ESP_OK) { image.close(); error = "Recovery-Partition konnte nicht geloescht werden"; return false; }
   uint8_t buffer[1024];
   size_t offset = 0;
@@ -472,6 +534,8 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = image.read(buffer, min(sizeof(buffer), imageSize - offset));
     if (!count || esp_partition_write(factory, offset, buffer, count) != ESP_OK) { image.close(); error = "Recovery konnte nicht geschrieben werden"; return false; }
     offset += count;
+    showUpdateStatus("Recovery schreiben", String(offset / 1024) + " / " + String(imageSize / 1024) + " KB",
+                     20 + min<size_t>(5, offset * 5 / imageSize));
   }
   image.close();
   MD5Builder verify;
@@ -480,10 +544,13 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = min(sizeof(buffer), imageSize - offset);
     if (esp_partition_read(factory, offset, buffer, count) != ESP_OK) { error = "Recovery konnte nicht rueckgelesen werden"; return false; }
     verify.add(buffer, count);
+    showUpdateStatus("Recovery pruefen", String((offset + count) / 1024) + " / " + String(imageSize / 1024) + " KB",
+                     25 + min<size_t>(4, (offset + count) * 4 / imageSize));
   }
   verify.calculate();
   if (verify.toString() != expectedMd5) { error = "Recovery-Rueckpruefung fehlgeschlagen"; return false; }
   SD.remove(BuildInfo::recoveryPath);
+  setInstalledRecoveryVersion(updateState.recoveryVersion);
   return true;
 }
 
@@ -491,22 +558,35 @@ bool prepareApprovedUpdate(String &error) {
   if (!updateState.available || !sdReady || WiFi.status() != WL_CONNECTED) { error = "Update ist nicht bereit"; return false; }
   updateState.installing = true;
   updateState.message = "Update wird geladen";
-  bool recoveryNeeded = !updateState.recoveryVersion.isEmpty() && newerVersion(updateState.recoveryVersion, installedRecoveryVersion());
-  if (recoveryNeeded) {
+  showUpdateStatus("Update vorbereiten", "Version " + updateState.version, 4);
+  if (updateState.recoveryAvailable) {
     updateState.message = "Recovery wird aktualisiert";
-    if (!downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5, error) ||
+    if (!downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
+                      "Recovery laden", 5, 18, error) ||
         !installRecovery(updateState.recoveryMd5, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
+  if (!updateState.firmwareAvailable) {
+    updateState.installing = false;
+    updateState.recoveryAvailable = false;
+    updateState.available = false;
+    updateState.message = "Recovery " + updateState.recoveryVersion + " installiert";
+    showUpdateStatus("Recovery fertig", "Version " + updateState.recoveryVersion, 100);
+    queueSystemLog("UPDATE_RECOVERY", "version=" + updateState.recoveryVersion + ",bereit=0");
+    return true;
+  }
   updateState.message = "Hauptfirmware wird geladen";
-  if (!downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5, error)) { updateState.installing = false; updateState.message = error; return false; }
+  if (!downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+                    "Firmware laden", 30, 55, error)) { updateState.installing = false; updateState.message = error; return false; }
   updateState.message = "Weboberflaeche wird geladen";
-  if (!downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5, error)) {
+  if (!downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+                    "Webseite laden", 56, 70, error)) {
     SD.remove(BuildInfo::firmwarePath);
     updateState.installing = false;
     updateState.message = error;
     return false;
   }
   updateState.message = "Weboberflaeche wird vorbereitet";
+  showUpdateStatus("Webdateien", "Staging wird vorbereitet", 71);
   if (!stageWebPackage(error)) {
     SD.remove(BuildInfo::firmwarePath);
     SD.remove(BuildInfo::webPackagePath);
@@ -525,6 +605,7 @@ bool prepareApprovedUpdate(String &error) {
     return false;
   }
   updateState.message = "Weboberflaeche wird aktiviert";
+  showUpdateStatus("Webdateien", "Neue Version aktivieren", 84);
   if (!activateStagedWeb(error)) {
     SD.remove(BuildInfo::firmwarePath);
     SD.remove(BuildInfo::webPackagePath);
@@ -552,6 +633,7 @@ bool prepareApprovedUpdate(String &error) {
   }
   queueSystemLog("UPDATE", "version=" + updateState.version + ",webVersion=" + updateState.webVersion + ",bereit=1");
   updateState.message = "Neustart in Recovery";
+  showUpdateStatus("Vorbereitung fertig", "Neustart in Recovery", 95);
   restartAt = millis() + 1000;
   return true;
 }
@@ -836,7 +918,7 @@ void setupWeb() {
   web.on("/", HTTP_GET, [] { if (authorized()) servePortal(); });
   web.on("/api/status", HTTP_GET, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(1536);
+    DynamicJsonDocument doc(1792);
     doc["version"] = BuildInfo::version;
     doc["deviceId"] = config.deviceId;
     doc["serialNumber"] = serialNumber();
@@ -866,8 +948,12 @@ void setupWeb() {
                       modem.packetDataConnected() ? "cellular" : "offline";
     JsonObject update = doc.createNestedObject("update");
     update["currentVersion"] = BuildInfo::version;
+    update["recoveryVersion"] = installedRecoveryVersion();
     update["available"] = updateState.available;
+    update["firmwareAvailable"] = updateState.firmwareAvailable;
+    update["recoveryAvailable"] = updateState.recoveryAvailable;
     update["version"] = updateState.version;
+    update["recoveryTargetVersion"] = updateState.recoveryVersion;
     update["checking"] = updateState.checking;
     update["installing"] = updateState.installing;
     update["message"] = updateState.message;
@@ -1141,6 +1227,17 @@ void storeConfigRevision(const String &revision) {
   }
 }
 
+bool recordMioneHeartbeat(const String &imei, bool value, const String &timestamp, const String &source, String &result) {
+  mioneHeartbeatImei = imei;
+  mioneHeartbeatValue = value;
+  mioneHeartbeatTimestamp = timestamp;
+  mioneHeartbeatReceivedAt = millis();
+  bool ok = !modem.imei().isEmpty() && imei == modem.imei();
+  result = ok ? "Heartbeat empfangen" : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+  mioneHeartbeatMessage = result + " (" + source + ")";
+  return ok;
+}
+
 void onMqtt(char *topic, byte *payload, unsigned int length) {
   String incoming(topic);
   String root = mqttDeviceRoot();
@@ -1166,13 +1263,9 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
       mioneHeartbeatMessage = "Ungueltiger Heartbeat: " + String(parsed.c_str());
       return;
     }
-    mioneHeartbeatImei = input["modemImei"] | "";
-    mioneHeartbeatValue = input["value"] | false;
-    mioneHeartbeatTimestamp = input["timestampUtc"] | "";
-    mioneHeartbeatReceivedAt = millis();
-    mioneHeartbeatMessage = mioneHeartbeatImei == modem.imei()
-                                ? "Heartbeat empfangen"
-                                : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+    String result;
+    String heartbeatImei = input["modemImei"] | input["imei"] | "";
+    recordMioneHeartbeat(heartbeatImei, input["value"] | true, input["timestampUtc"] | "", "MQTT", result);
     return;
   }
   String currentMobileTopic = config.mqttUser + "/MiOne/Config/Mobile";
@@ -1180,12 +1273,13 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     DynamicJsonDocument input(3072);
     DeserializationError parsed = deserializeJson(input, payload, length);
     String result = parsed ? String(parsed.c_str()) : "";
-    bool ok = !parsed && alarmRouter.updateMobileSlots(input.as<JsonObjectConst>(), modem.imei(), result);
+    bool changed = false;
+    bool ok = !parsed && alarmRouter.updateMobileSlots(input.as<JsonObjectConst>(), modem.imei(), result, &changed);
     mqttMobileReceivedAt = millis();
     mqttMobileSyncMessage = ok ? result : "Abgelehnt: " + result;
-    queueSystemLog(ok ? "MOBILE_CONFIG" : "MOBILE_CONFIG_ERROR", result);
+    if (!ok || changed) queueSystemLog(ok ? "MOBILE_CONFIG" : "MOBILE_CONFIG_ERROR", result);
     if (!root.isEmpty()) {
-      DynamicJsonDocument response(384);
+      DynamicJsonDocument response(1536);
       response["ok"] = ok;
       response["imei"] = modem.imei();
       response["message"] = result;
@@ -1397,10 +1491,14 @@ void maintainMqtt() {
 
 void publishUpdateState() {
   if (!mqtt.connected()) return;
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(768);
   doc["currentVersion"] = BuildInfo::version;
+  doc["currentRecoveryVersion"] = installedRecoveryVersion();
   doc["available"] = updateState.available;
+  doc["firmwareAvailable"] = updateState.firmwareAvailable;
+  doc["recoveryAvailable"] = updateState.recoveryAvailable;
   doc["version"] = updateState.version;
+  doc["recoveryTargetVersion"] = updateState.recoveryVersion;
   doc["installing"] = updateState.installing;
   doc["message"] = updateState.message;
   String body;
@@ -1441,8 +1539,12 @@ void maintainButtons() {
 void maintainUpdates() {
   if (updateState.approved && !updateState.installing) {
     updateState.approved = false;
+    updateState.failed = false;
     String error;
-    prepareApprovedUpdate(error);
+    if (!prepareApprovedUpdate(error)) {
+      updateState.failed = true;
+      showUpdateStatus("UPDATE FEHLER", error, updateState.progress);
+    }
     publishUpdateState();
     return;
   }
@@ -1566,6 +1668,42 @@ void showBootStatus(const String &step, uint8_t progress, const String &detail =
   display.display();
 }
 
+void renderUpdateStatus(const String &step, const String &detail, uint8_t progress) {
+  if (!displayReady) return;
+  progress = min<uint8_t>(progress, 100);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("OTA UPDATE");
+  display.setCursor(92, 0);
+  display.printf("%3u%%", progress);
+  display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+  display.setCursor(0, 15);
+  display.print(step.substring(0, 21));
+  display.setCursor(0, 29);
+  display.print(detail.substring(0, 21));
+  uint8_t pulse = (millis() / 250) % 4;
+  display.setCursor(0, 41);
+  display.print("arbeitet");
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (i <= pulse) display.fillCircle(53 + i * 7, 44, 2, SSD1306_WHITE);
+    else display.drawCircle(53 + i * 7, 44, 2, SSD1306_WHITE);
+  }
+  display.drawRect(0, 52, 128, 10, SSD1306_WHITE);
+  if (progress) display.fillRect(2, 54, progress * 124UL / 100, 6, SSD1306_WHITE);
+  display.display();
+}
+
+void showUpdateStatus(const String &step, const String &detail, uint8_t progress) {
+  updateState.message = step;
+  updateState.detail = detail;
+  updateState.progress = min<uint8_t>(progress, 100);
+  if (!displayReady || (millis() - lastUpdateDisplayAt < 100 && progress < 100)) return;
+  lastUpdateDisplayAt = millis();
+  renderUpdateStatus(step, detail, progress);
+}
+
 void sendAlarmProgress(const String &body) {
   if (!config.alarmProgressEnabled) return;
   if (mqtt.connected() && !config.mqttUser.isEmpty()) {
@@ -1641,8 +1779,8 @@ void processAlarmSocketLine(const String &line) {
     response["type"] = "configResult";
   } else if (String(input["type"] | "") == "heartbeat") {
     String payloadImei = input["modemImei"] | "";
-    ok = !modem.imei().isEmpty() && payloadImei == modem.imei();
-    result = ok ? "Heartbeat empfangen" : "Modem-IMEI stimmt nicht";
+    if (payloadImei.isEmpty()) payloadImei = input["imei"] | "";
+    ok = recordMioneHeartbeat(payloadImei, input["value"] | true, input["timestampUtc"] | "", "TCP", result);
     response["type"] = "heartbeatResult";
   } else {
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
@@ -1718,11 +1856,16 @@ void updateDisplay() {
   display.setCursor(0, 0);
   display.printf("%s\n", clockText().c_str());
   display.drawFastHLine(0, 9, 128, SSD1306_WHITE);
-  if (updateState.installing || updateState.available) {
+  if (updateState.installing || updateState.failed) {
+    renderUpdateStatus(updateState.message, updateState.detail, updateState.progress);
+    return;
+  }
+  if (updateState.available) {
+    String target = updateState.firmwareAvailable && updateState.recoveryAvailable ? "FW " + updateState.version + " REC " + updateState.recoveryVersion :
+                    updateState.firmwareAvailable ? "Firmware " + updateState.version :
+                    "Recovery " + updateState.recoveryVersion;
     display.setCursor(0, 13);
-    display.printf("FIRMWARE UPDATE\n");
-    if (updateState.available) display.printf("Neu: %s\nTaste 2s halten\nWeb / MQTT", updateState.version.c_str());
-    else display.printf("%s", updateState.message.c_str());
+    display.printf("UPDATE VERFUEGBAR\n%s\nTaste 2s halten\nWeb / MQTT", target.c_str());
     display.display();
     return;
   }

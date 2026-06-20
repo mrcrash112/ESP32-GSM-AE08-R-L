@@ -1,9 +1,11 @@
 #include <Arduino.h>
+#include <Adafruit_SSD1306.h>
 #include <MD5Builder.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Update.h>
+#include <Wire.h>
 #include <esp_ota_ops.h>
 
 #include "BoardPins.h"
@@ -11,6 +13,37 @@
 
 namespace {
 bool sdMounted = false;
+bool displayReady = false;
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+uint32_t lastDisplayUpdate = 0;
+
+void showStatus(const String &step, const String &detail, uint8_t progress, bool force = false) {
+  if (!displayReady || (!force && millis() - lastDisplayUpdate < 100)) return;
+  lastDisplayUpdate = millis();
+  progress = min<uint8_t>(progress, 100);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("MIONE RECOVERY");
+  display.setCursor(92, 0);
+  display.printf("%3u%%", progress);
+  display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+  display.setCursor(0, 15);
+  display.print(step.substring(0, 21));
+  display.setCursor(0, 29);
+  display.print(detail.substring(0, 21));
+  uint8_t pulse = (millis() / 250) % 4;
+  display.setCursor(0, 41);
+  display.print("arbeitet");
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (i <= pulse) display.fillCircle(53 + i * 7, 44, 2, SSD1306_WHITE);
+    else display.drawCircle(53 + i * 7, 44, 2, SSD1306_WHITE);
+  }
+  display.drawRect(0, 52, 128, 10, SSD1306_WHITE);
+  if (progress) display.fillRect(2, 54, progress * 124UL / 100, 6, SSD1306_WHITE);
+  display.display();
+}
 
 bool removeTree(const String &path) {
   File node = SD.open(path);
@@ -59,7 +92,11 @@ bool finalizeWebUpdate(bool success) {
 }
 
 void bootMain(const String &result) {
-  finalizeWebUpdate(result == "Firmware erfolgreich installiert");
+  bool success = result == "Firmware erfolgreich installiert";
+  showStatus("WWW abschliessen", "Dateien aufraeumen", success ? 98 : 0, true);
+  finalizeWebUpdate(success);
+  showStatus(result == "Firmware erfolgreich installiert" ? "Update fertig" : "UPDATE FEHLER",
+             result, success ? 100 : 0, true);
   Preferences prefs;
   prefs.begin("fw-update", false);
   prefs.putString("result", result);
@@ -70,7 +107,7 @@ void bootMain(const String &result) {
       ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
   if (mainPartition && esp_ota_set_boot_partition(mainPartition) == ESP_OK) {
     Serial.println("Starte Hauptfirmware: " + result);
-    delay(500);
+    delay(1500);
     ESP.restart();
   }
   Serial.println("Keine gueltige Hauptfirmware gefunden. Recovery bleibt aktiv.");
@@ -80,7 +117,17 @@ bool actualMd5(File &file, String &value) {
   if (!file) return false;
   MD5Builder md5;
   md5.begin();
-  md5.addStream(file, file.size());
+  size_t size = file.size();
+  size_t checked = 0;
+  uint8_t buffer[1024];
+  while (file.available()) {
+    size_t count = file.read(buffer, sizeof(buffer));
+    if (!count) return false;
+    md5.add(buffer, count);
+    checked += count;
+    showStatus("Firmware pruefen", String(checked / 1024) + " / " + String(size / 1024) + " KB",
+               12 + min<size_t>(18, checked * 18 / size));
+  }
   md5.calculate();
   value = md5.toString();
   file.seek(0);
@@ -88,12 +135,14 @@ bool actualMd5(File &file, String &value) {
 }
 
 void installUpdate(const String &expectedMd5) {
+  showStatus("SD-Karte", "wird gestartet", 5, true);
   pinMode(BoardPins::sdCs, OUTPUT);
   pinMode(BoardPins::ethernetCs, OUTPUT);
   digitalWrite(BoardPins::ethernetCs, HIGH);
   SPI.begin(BoardPins::spiSck, BoardPins::spiMiso, BoardPins::spiMosi);
   if (!SD.begin(BoardPins::sdCs, SPI, 10000000)) return bootMain("SD-Karte nicht verfuegbar");
   sdMounted = true;
+  showStatus("SD-Karte", "Firmware gefunden", 10, true);
 
   File firmware = SD.open(BuildInfo::firmwarePath, FILE_READ);
   if (!firmware || firmware.isDirectory()) return bootMain("Firmware-Datei fehlt");
@@ -109,12 +158,22 @@ void installUpdate(const String &expectedMd5) {
     return bootMain("Update konnte nicht gestartet werden");
   }
   Update.setMD5(expectedMd5.c_str());
-  size_t written = Update.writeStream(firmware);
+  size_t written = 0;
+  uint8_t buffer[1024];
+  showStatus("Firmware schreiben", "Flash wird vorbereitet", 32, true);
+  while (firmware.available()) {
+    size_t count = firmware.read(buffer, sizeof(buffer));
+    if (!count || Update.write(buffer, count) != count) break;
+    written += count;
+    showStatus("Firmware schreiben", String(written / 1024) + " / " + String(size / 1024) + " KB",
+               32 + min<size_t>(60, written * 60 / size));
+  }
   firmware.close();
   if (written != size || !Update.end(true) || Update.hasError()) {
     return bootMain("Firmware-Installation fehlgeschlagen");
   }
   SD.remove(BuildInfo::firmwarePath);
+  showStatus("WWW abschliessen", "Dateien bestaetigen", 96, true);
   Preferences completed;
   if (completed.begin("fw-update", false)) {
     completed.putString("result", "Firmware erfolgreich installiert");
@@ -127,6 +186,9 @@ void installUpdate(const String &expectedMd5) {
 void setup() {
   Serial.begin(115200);
   delay(250);
+  Wire.begin(BoardPins::i2cSda, BoardPins::i2cScl);
+  displayReady = display.begin(SSD1306_SWITCHCAPVCC, BoardPins::oledAddress);
+  showStatus("Recovery startet", "Update wird geprueft", 1, true);
   Serial.println("Mione Recovery Updater");
   Preferences prefs;
   prefs.begin("fw-update", false);

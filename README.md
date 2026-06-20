@@ -28,6 +28,7 @@ Implementiert:
 - MQTT-Konfigurationsaenderungen mit anschliessendem Neustart
 - Firmware-Upload oder GitHub-Download auf SD und MD5-Pruefung
 - semantischer Versionsvergleich und Updatefreigabe per Taste, Web oder MQTT
+- OLED-Fortschrittsanzeige fuer Download, MD5, WWW-Staging, Recovery und Flashvorgang
 - optionales Recovery-Update vor der Installation der Hauptfirmware
 - separate Factory-Recovery, die nur eine bereits gepruefte SD-Datei installiert
 
@@ -53,6 +54,10 @@ eingestellt werden. Protokolliert werden unter anderem Bootzaehler und
 Resetgrund, Alarmempfaenger und Versandresultat, MQTT-Zustand, Netzwerkweg, IP,
 WLAN-RSSI, Mobilfunk-CSQ/dBm, Netzbetreiber, Registrierung, Datenkontext,
 Heartbeat-Alter, Tastenmittelwert, RTC, SD und freier Heap.
+`MOBILE_CONFIG` wird nur bei einer tatsaechlichen Aenderung erzeugt und nennt
+je Slot die alten und neuen Werte fuer Rufnummer, Aktivstatus und Alarmierungsart
+sowie Aenderungen des Technical-Zeitfensters. Unveraenderte MQTT-Wiederholungen
+werden weder erneut in NVS geschrieben noch protokolliert.
 Der Button `Letzte Logeintraege anzeigen` oeffnet `/logs.html` in einem neuen
 Fenster. Der Viewer zeigt standardmaessig die neuesten 250 Eintraege; die
 Anzahl kann dort zwischen 1 und 2000 geaendert werden.
@@ -207,9 +212,9 @@ Nach der Ersteinrichtung ist HTTP Basic Auth aktiv. Dateipfade sind auf `/www`,
 Ein Release-Manifest fuer GitHub kann erzeugt werden mit:
 
 ```sh
-python3 scripts/firmware_manifest.py .pio/build/main/firmware.bin 0.1.2 \
-  https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/v0.1.2 \
-  --recovery .pio/build/recovery/firmware.bin --recovery-version 0.1.0
+python3 scripts/firmware_manifest.py .pio/build/main/firmware.bin 0.1.3 \
+  https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/v0.1.3 \
+  --recovery .pio/build/recovery/firmware.bin --recovery-version 0.1.1
 ```
 
 Der Generator legt neben dem Manifest drei eindeutig benannte Release-Artefakte

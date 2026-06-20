@@ -23,7 +23,8 @@ class AlarmRouter {
 
   void begin();
   void setProgressCallback(AlarmProgressCallback callback) { progressCallback_ = callback; }
-  bool updateMobileSlots(JsonObjectConst payload, const String &expectedImei, String &result);
+  bool updateMobileSlots(JsonObjectConst payload, const String &expectedImei, String &result,
+                         bool *changed = nullptr);
   bool updateMobileSlot(uint8_t slot, JsonObjectConst payload, const String &expectedImei,
                         const String &secret, String &result);
   bool processAlarmPayload(JsonObjectConst payload, const String &expectedImei,
