@@ -47,6 +47,10 @@ bool parseTimeText(const String &value, uint16_t &minuteOfDay) {
 void secret(JsonObject out, const char *key, const String &value, bool include) {
   out[key] = include ? value : (value.isEmpty() ? "" : "***");
 }
+
+bool validInputDelay(uint16_t seconds) {
+  return seconds == 0 || seconds == 300 || seconds == 600 || seconds == 900;
+}
 }  // namespace
 
 void DeviceConfig::setDefaults(const String &chipId) {
@@ -102,6 +106,22 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
 
   JsonObject notifications = root.createNestedObject("notifications");
   notifications["alarmProgress"] = alarmProgressEnabled;
+
+  JsonArray alarmInputs = root.createNestedArray("alarmInputs");
+  for (uint8_t i = 0; i < 4; ++i) {
+    JsonObject input = alarmInputs.createNestedObject();
+    input["index"] = i + 1;
+    input["enabled"] = inputAlarms[i].enabled;
+    input["trigger"] = inputAlarms[i].alarmOnClose ? "close" : "open";
+    input["text"] = inputAlarms[i].text;
+    input["delaySeconds"] = inputAlarms[i].delaySeconds;
+    JsonArray recipients = input.createNestedArray("recipients");
+    for (uint8_t slot = 0; slot < 5; ++slot) {
+      JsonObject recipient = recipients.createNestedObject();
+      recipient["number"] = inputAlarms[i].recipients[slot].number;
+      recipient["delivery"] = inputAlarms[i].recipients[slot].delivery;
+    }
+  }
 
   JsonObject web = root.createNestedObject("web");
   web["user"] = webUser;
@@ -163,6 +183,32 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   JsonObjectConst notifications = root["notifications"];
   alarmProgressEnabled = notifications["alarmProgress"] | alarmProgressEnabled;
 
+  JsonArrayConst alarmInputs = root["alarmInputs"];
+  if (!alarmInputs.isNull()) {
+    for (uint8_t i = 0; i < 4; ++i) inputAlarms[i] = InputAlarmConfig();
+    for (JsonObjectConst input : alarmInputs) {
+      int index = input["index"] | 0;
+      if (index < 1 || index > 4) continue;
+      InputAlarmConfig &target = inputAlarms[index - 1];
+      target.enabled = input["enabled"] | target.enabled;
+      String trigger = input["trigger"] | "";
+      trigger.toLowerCase();
+      target.alarmOnClose = trigger == "open" ? false : true;
+      target.text = input["text"] | "";
+      if (target.text.length() > 160) target.text = target.text.substring(0, 160);
+      target.delaySeconds = input["delaySeconds"] | target.delaySeconds;
+      JsonArrayConst recipients = input["recipients"];
+      uint8_t slot = 0;
+      for (JsonObjectConst recipient : recipients) {
+        if (slot >= 5) break;
+        target.recipients[slot].number = recipient["number"] | "";
+        int delivery = recipient["delivery"] | 0;
+        target.recipients[slot].delivery = delivery < 0 || delivery > 3 ? 0 : static_cast<uint8_t>(delivery);
+        ++slot;
+      }
+    }
+  }
+
   JsonObjectConst web = root["web"];
   webUser = web["user"] | webUser;
   if (web["password"].is<const char *>() && web["password"] != "***") webPassword = web["password"].as<String>();
@@ -191,12 +237,36 @@ bool DeviceConfig::validate(String &error) const {
   else if (offlineTcpEnabled && offlineTcpPort == 0) error = "Offline-TCP-Port fehlt";
   else if (!safeAtValue(apn) || !safeAtValue(apnUser) || !safeAtValue(apnPassword)) error = "Mobilfunk-Zugangsdaten enthalten ungueltige Zeichen";
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";
-  else if (webUser.isEmpty() || webPassword.length() < 8) error = "Web-Zugang benoetigt ein Passwort mit mindestens 8 Zeichen";
-  else if (commandSecret.length() < 8) error = "Befehls-Secret muss mindestens 8 Zeichen lang sein";
-  else if (updateInstallMinute >= 1440) error = "Installationszeit fuer Updates ist ungueltig";
-  else if (updateChannel != "stable" && updateChannel != "beta") error = "Firmware-Kanal muss stable oder beta sein";
-  else if (updateCheckEnabled && !updateManifestUrl.isEmpty() && !updateManifestUrl.startsWith("https://github.com/") && !updateManifestUrl.startsWith("https://raw.githubusercontent.com/")) error = "Update-Manifest muss von GitHub per HTTPS geladen werden";
-  else if (updateCheckMinutes < 5) error = "Update-Pruefintervall muss mindestens 5 Minuten betragen";
-  else return true;
+  else {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (inputAlarms[i].text.length() > 160) {
+        error = "Alarmtext fuer Digitaleingang " + String(i + 1) + " ist zu lang";
+        return false;
+      }
+      if (!validInputDelay(inputAlarms[i].delaySeconds)) {
+        error = "Verzoegerungszeit fuer Digitaleingang " + String(i + 1) + " ist ungueltig";
+        return false;
+      }
+      for (uint8_t slot = 0; slot < 5; ++slot) {
+        const InputAlarmRecipient &recipient = inputAlarms[i].recipients[slot];
+        if (recipient.delivery > 3) {
+          error = "Alarmierungsweg fuer Digitaleingang " + String(i + 1) + " ist ungueltig";
+          return false;
+        }
+        if (recipient.number.length() > 32) {
+          error = "Rufnummer fuer Digitaleingang " + String(i + 1) + " ist zu lang";
+          return false;
+        }
+      }
+    }
+    if (webUser.isEmpty() || webPassword.length() < 8) error = "Web-Zugang benoetigt ein Passwort mit mindestens 8 Zeichen";
+    else if (commandSecret.length() < 8) error = "Befehls-Secret muss mindestens 8 Zeichen lang sein";
+    else if (updateInstallMinute >= 1440) error = "Installationszeit fuer Updates ist ungueltig";
+    else if (updateChannel != "stable" && updateChannel != "beta") error = "Firmware-Kanal muss stable oder beta sein";
+    else if (updateCheckEnabled && !updateManifestUrl.isEmpty() && !updateManifestUrl.startsWith("https://github.com/") && !updateManifestUrl.startsWith("https://raw.githubusercontent.com/")) error = "Update-Manifest muss von GitHub per HTTPS geladen werden";
+    else if (updateCheckMinutes < 5) error = "Update-Pruefintervall muss mindestens 5 Minuten betragen";
+    else return true;
+    return false;
+  }
   return false;
 }

@@ -11,6 +11,19 @@ struct IPv4Config {
   String dns = "1.1.1.1";
 };
 
+struct InputAlarmRecipient {
+  String number;
+  uint8_t delivery = 0;
+};
+
+struct InputAlarmConfig {
+  bool enabled = false;
+  bool alarmOnClose = true;
+  String text;
+  uint16_t delaySeconds = 0;
+  InputAlarmRecipient recipients[5];
+};
+
 struct DeviceConfig {
   uint16_t schema = 1;
   String deviceId;
@@ -46,6 +59,8 @@ struct DeviceConfig {
   uint16_t offlineTcpPort = 0;
   String commandSecret;
   bool alarmProgressEnabled = true;
+
+  InputAlarmConfig inputAlarms[4];
 
   String webUser = "admin";
   String webPassword;

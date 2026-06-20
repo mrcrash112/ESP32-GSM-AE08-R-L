@@ -111,10 +111,18 @@ bool updateStatusCanServeWeb = false;
 uint32_t lastDisplayVersionRefresh = 0;
 String displayRecoveryVersion;
 String displayWebVersion;
+bool digitalInputInitialized = false;
+bool digitalInputClosed[4] = {};
+bool digitalInputLastReading[4] = {};
+uint32_t digitalInputChangedAt[4] = {};
+bool digitalInputPending[4] = {};
+bool digitalInputPendingClosed[4] = {};
+uint32_t digitalInputPendingAt[4] = {};
 constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
+constexpr uint32_t kInputDebounceMs = 60;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -154,7 +162,10 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 bool updateNetworkReady();
 String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
+String mqttDeviceRoot();
 void publishMioneStatus(bool force = false);
+void showAlarmProgress(const String &alarmCode, const String &alarmText,
+                       const String &action, const String &number, AlarmProgress progress);
 
 void persistUpdateManualLock(const String &detail) {
   Preferences prefs;
@@ -1311,6 +1322,122 @@ String activeNetworkName() {
   return "offline";
 }
 
+bool readDigitalInputClosed(uint8_t index) {
+  if (index >= 4) return false;
+  return digitalRead(BoardPins::inputs[index]) == LOW;
+}
+
+void fillDigitalInputStatus(JsonArray out) {
+  for (uint8_t i = 0; i < 4; ++i) {
+    JsonObject input = out.createNestedObject();
+    const InputAlarmConfig &settings = config.inputAlarms[i];
+    input["index"] = i + 1;
+    input["pin"] = BoardPins::inputs[i];
+    input["enabled"] = settings.enabled;
+    input["closed"] = digitalInputClosed[i];
+    input["state"] = digitalInputClosed[i] ? "closed" : "open";
+    input["alarmTrigger"] = settings.alarmOnClose ? "close" : "open";
+    input["delaySeconds"] = settings.delaySeconds;
+    input["pending"] = digitalInputPending[i];
+  }
+}
+
+void publishDigitalInputsStatus(bool retain = true) {
+  if (!mqtt.connected() || modem.imei().isEmpty()) return;
+  DynamicJsonDocument doc(1024);
+  doc["type"] = "digitalInputs";
+  doc["modemImei"] = modem.imei();
+  doc["timestamp"] = clockText();
+  fillDigitalInputStatus(doc.createNestedArray("inputs"));
+  String body;
+  serializeJson(doc, body);
+  String root = mqttDeviceRoot();
+  if (!root.isEmpty()) mqtt.publish((root + "/inputs/status").c_str(), body.c_str(), retain);
+  if (!config.mqttUser.isEmpty()) mqtt.publish((config.mqttUser + "/MiOne/InputStatus").c_str(), body.c_str(), retain);
+}
+
+void sendInputAlarm(uint8_t index) {
+  if (index >= 4) return;
+  const InputAlarmConfig &settings = config.inputAlarms[index];
+  String alarmCode = "DI" + String(index + 1);
+  String text = settings.text;
+  text.trim();
+  if (text.isEmpty()) text = "Alarm Digitaleingang " + String(index + 1);
+  queueSystemLog("INPUT_ALARM", "input=" + String(index + 1) + ",state=" +
+                                (digitalInputClosed[index] ? "closed" : "open"));
+  for (uint8_t slot = 0; slot < 5; ++slot) {
+    const InputAlarmRecipient &recipient = settings.recipients[slot];
+    String number = recipient.number;
+    number.trim();
+    if (number.isEmpty() || recipient.delivery == 0) continue;
+    if (recipient.delivery == 1 || recipient.delivery == 3) {
+      showAlarmProgress(alarmCode, text, "SMS", number, AlarmProgress::starting);
+      bool ok = modem.sendSms(number, text);
+      showAlarmProgress(alarmCode, text, "SMS", number, ok ? AlarmProgress::succeeded : AlarmProgress::failed);
+    }
+    if (recipient.delivery == 2 || recipient.delivery == 3) {
+      showAlarmProgress(alarmCode, text, "ANRUF", number, AlarmProgress::starting);
+      bool ok = modem.ring(number, 20);
+      showAlarmProgress(alarmCode, text, "ANRUF", number, ok ? AlarmProgress::succeeded : AlarmProgress::failed);
+    }
+  }
+}
+
+void beginDigitalInputs() {
+  for (uint8_t i = 0; i < 4; ++i) {
+    pinMode(BoardPins::inputs[i], INPUT);
+    bool closed = readDigitalInputClosed(i);
+    digitalInputClosed[i] = closed;
+    digitalInputLastReading[i] = closed;
+    digitalInputChangedAt[i] = millis();
+    digitalInputPending[i] = false;
+  }
+  digitalInputInitialized = true;
+}
+
+void handleDigitalInputTransition(uint8_t index, bool closed) {
+  const InputAlarmConfig &settings = config.inputAlarms[index];
+  bool shouldAlarm = settings.enabled && closed == settings.alarmOnClose;
+  digitalInputPending[index] = false;
+  if (shouldAlarm) {
+    if (settings.delaySeconds == 0) {
+      sendInputAlarm(index);
+    } else {
+      digitalInputPending[index] = true;
+      digitalInputPendingClosed[index] = closed;
+      digitalInputPendingAt[index] = millis();
+    }
+  }
+  publishDigitalInputsStatus(true);
+  publishMioneStatus(true);
+}
+
+void maintainDigitalInputs() {
+  if (!digitalInputInitialized) return;
+  for (uint8_t i = 0; i < 4; ++i) {
+    bool reading = readDigitalInputClosed(i);
+    if (reading != digitalInputLastReading[i]) {
+      digitalInputLastReading[i] = reading;
+      digitalInputChangedAt[i] = millis();
+    }
+    if (reading != digitalInputClosed[i] && millis() - digitalInputChangedAt[i] >= kInputDebounceMs) {
+      digitalInputClosed[i] = reading;
+      handleDigitalInputTransition(i, reading);
+    }
+    if (digitalInputPending[i]) {
+      const InputAlarmConfig &settings = config.inputAlarms[i];
+      if (!settings.enabled || digitalInputClosed[i] != digitalInputPendingClosed[i]) {
+        digitalInputPending[i] = false;
+        publishDigitalInputsStatus(true);
+      } else if (millis() - digitalInputPendingAt[i] >= static_cast<uint32_t>(settings.delaySeconds) * 1000UL) {
+        digitalInputPending[i] = false;
+        sendInputAlarm(i);
+        publishDigitalInputsStatus(true);
+      }
+    }
+  }
+}
+
 String updateTransportName() {
   if (WiFi.status() == WL_CONNECTED) return "wlan";
   if (ethernetReady && Ethernet.linkStatus() == LinkON) return "ethernet";
@@ -1429,7 +1556,7 @@ void setupWeb() {
   web.on("/", HTTP_GET, [] { if (authorized()) servePortal(); });
   web.on("/api/status", HTTP_GET, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(1792);
+    DynamicJsonDocument doc(2560);
     doc["version"] = BuildInfo::version;
     doc["deviceId"] = config.deviceId;
     doc["serialNumber"] = serialNumber();
@@ -1491,13 +1618,13 @@ void setupWeb() {
   });
   web.on("/api/config", HTTP_GET, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(6144);
     config.toJson(doc.to<JsonObject>(), false);
     jsonResponse(200, doc);
   });
   web.on("/api/config", HTTP_PUT, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(6144);
     DeserializationError parsed = deserializeJson(doc, web.arg("plain"));
     if (parsed) return errorResponse(400, parsed.c_str());
     DeviceConfig candidate = config;
@@ -1760,6 +1887,7 @@ bool recordMioneHeartbeat(const String &imei, bool value, const String &timestam
 }
 
 void onMqtt(char *topic, byte *payload, unsigned int length) {
+  if (!config.mqttEnabled) return;
   String incoming(topic);
   String root = mqttDeviceRoot();
   String mioneRoot = config.mqttUser + "/MiOne/config";
@@ -1946,9 +2074,10 @@ String mqttErrorMessage(int state) {
 }
 
 void maintainMqtt() {
-  if (!config.mqttEnabled) {
+  if (!config.mqttEnabled && config.mqttHost.isEmpty()) {
     mqttConnectWindowStartedAt = 0;
-    setMqttConnectionStatus(-10, "MQTT ist in der Konfiguration deaktiviert");
+    mqttMobileSubscriptionReady = false;
+    setMqttConnectionStatus(-10, "MQTT-Empfang ist deaktiviert und kein Broker fuer Statusmeldungen gesetzt");
     return;
   }
   if (config.mqttHost.isEmpty()) {
@@ -1959,7 +2088,12 @@ void maintainMqtt() {
   if (mqtt.connected()) {
     mqttConnectWindowStartedAt = 0;
     String transport = ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "WLAN";
-    if (mqtt.loop()) setMqttConnectionStatus(MQTT_CONNECTED, "Mit dem MQTT-Broker verbunden", transport);
+    if (mqtt.loop()) {
+      setMqttConnectionStatus(MQTT_CONNECTED,
+                              config.mqttEnabled ? "Mit dem MQTT-Broker verbunden" :
+                                                   "MQTT-Statusmeldungen aktiv, Empfang deaktiviert",
+                              transport);
+    }
     else {
       setMqttConnectionStatus(mqtt.state(), mqttErrorMessage(mqtt.state()), transport);
       mqtt.disconnect();
@@ -2000,11 +2134,15 @@ void maintainMqtt() {
   bool connected = mqtt.connect(clientId.c_str(), config.mqttUser.c_str(), config.mqttPassword.c_str(), willTopic.c_str(), 1, true, offline.c_str());
   if (connected) {
     mqttConnectWindowStartedAt = 0;
-    setMqttConnectionStatus(MQTT_CONNECTED, "Mit dem MQTT-Broker verbunden", transport);
+    setMqttConnectionStatus(MQTT_CONNECTED,
+                            config.mqttEnabled ? "Mit dem MQTT-Broker verbunden" :
+                                                 "MQTT-Statusmeldungen aktiv, Empfang deaktiviert",
+                            transport);
     String online = "{\"online\":true,\"imei\":\"" + modem.imei() + "\"}";
     mqtt.publish(willTopic.c_str(), online.c_str(), true);
     String topic;
-    if (!config.mqttUser.isEmpty()) {
+    mqttMobileSubscriptionReady = false;
+    if (config.mqttEnabled && !config.mqttUser.isEmpty()) {
       String mioneRoot = config.mqttUser + "/MiOne/config";
       bool subscriptionsOk = true;
       topic = config.mqttUser + "/MiOne/Config/Mobile";
@@ -2025,14 +2163,19 @@ void maintainMqtt() {
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       mqttMobileSubscriptionReady = subscriptionsOk;
       if (!subscriptionsOk) mqttMobileSyncMessage = "MQTT-Abonnement der MiOne-Topics fehlgeschlagen";
+    } else if (!config.mqttEnabled) {
+      mqttMobileSyncMessage = "MQTT-Empfang deaktiviert; es werden nur Statusmeldungen gesendet";
     }
-    topic = root + "/app/config";
-    mqtt.subscribe(topic.c_str(), 1);
-    topic = root + "/update/check";
-    mqtt.subscribe(topic.c_str(), 1);
-    topic = root + "/update/approve";
-    mqtt.subscribe(topic.c_str(), 1);
+    if (config.mqttEnabled) {
+      topic = root + "/app/config";
+      mqtt.subscribe(topic.c_str(), 1);
+      topic = root + "/update/check";
+      mqtt.subscribe(topic.c_str(), 1);
+      topic = root + "/update/approve";
+      mqtt.subscribe(topic.c_str(), 1);
+    }
     publishMioneStatus(true);
+    publishDigitalInputsStatus(true);
   } else {
     setMqttConnectionStatus(mqtt.state(), mqttErrorMessage(mqtt.state()), transport);
   }
@@ -2052,7 +2195,7 @@ void publishUpdateState() {
 }
 
 String mioneStatusBody() {
-  DynamicJsonDocument doc(2048);
+  DynamicJsonDocument doc(3072);
   doc["type"] = "modemStatus";
   doc["modemImei"] = modem.imei();
   doc["online"] = true;
@@ -2066,6 +2209,7 @@ String mioneStatusBody() {
   doc["sequence"] = ++mioneStatusSequence;
   JsonObject update = doc.createNestedObject("update");
   fillUpdateStatus(update);
+  fillDigitalInputStatus(doc.createNestedArray("digitalInputs"));
   String body;
   serializeJson(doc, body);
   return body;
@@ -2570,6 +2714,7 @@ void setup() {
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   tzset();
   pinMode(BoardPins::buttonsAdc, INPUT);
+  beginDigitalInputs();
   buttonSampleSum = 0;
   for (uint8_t i = 0; i < 10; ++i) {
     buttonSamples[i] = analogRead(BoardPins::buttonsAdc);
@@ -2647,6 +2792,7 @@ void loop() {
   if (accessPoint) captiveDns.processNextRequest();
   web.handleClient();
   maintainOfflineTcp();
+  maintainDigitalInputs();
   modem.loop();
   bool primaryNetwork = WiFi.status() == WL_CONNECTED ||
                         (ethernetReady && Ethernet.linkStatus() == LinkON);

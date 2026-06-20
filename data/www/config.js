@@ -20,6 +20,42 @@ function isDhcp(name){return document.querySelector(`input[name="${name}"]:check
 function secret(id,stored){const entered=value(id);return entered||(stored==='***'?'***':'')}
 function updateManifestForChannel(){const current=value('updateManifestUrl'),channel=value('updateChannel');if(current&&current!==stableManifestUrl&&current!==betaManifestUrl)return;setValue('updateManifestUrl',channel==='beta'?betaManifestUrl:stableManifestUrl);updateSaveBar()}
 
+function buildAlarmInputUi(){
+  const container=$('alarmInputs');
+  const delayOptions=[[0,'Sofort'],[300,'5 Min'],[600,'10 Min'],[900,'15 Min']];
+  const deliveryOptions=[[0,'Aus'],[1,'SMS'],[2,'Anruf'],[3,'SMS u. Anruf']];
+  container.innerHTML=Array.from({length:4},(_,i)=>{
+    const input=i+1;
+    const recipients=Array.from({length:5},(_,slot)=>`<div class="recipient-row"><label><span>Rufnummer ${slot+1}</span><input id="alarmInput${input}Number${slot+1}" type="tel" maxlength="32" placeholder="+491…"></label><label><span>Weg</span><select id="alarmInput${input}Delivery${slot+1}">${deliveryOptions.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></label></div>`).join('');
+    return `<article class="input-alarm"><div class="input-alarm-head"><div><h3>Digitaleingang ${input}</h3><p>Pin ${input}</p></div><label class="switch"><input id="alarmInput${input}Enabled" type="checkbox"><span></span><b>Aktiv</b></label></div><div class="fields two"><label><span>Alarmierung bei</span><select id="alarmInput${input}Trigger"><option value="open">Öffnen</option><option value="close">Schließen</option></select></label><label><span>Verzögerungszeit</span><select id="alarmInput${input}Delay">${delayOptions.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></label><label class="wide"><span>Alarmtext</span><input id="alarmInput${input}Text" type="text" maxlength="160" placeholder="Alarm Digitaleingang ${input}"><small><span id="alarmInput${input}TextCount">0</span>/160 Zeichen</small></label></div><div class="recipient-grid">${recipients}</div></article>`;
+  }).join('');
+  for(let input=1;input<=4;input++){$(`alarmInput${input}Text`).addEventListener('input',()=>{$(`alarmInput${input}TextCount`).textContent=value(`alarmInput${input}Text`).length})}
+}
+
+function fillAlarmInputs(inputs=[]){
+  for(let input=1;input<=4;input++){
+    const cfg=inputs.find(item=>Number(item.index)===input)||{};
+    setChecked(`alarmInput${input}Enabled`,cfg.enabled);
+    setValue(`alarmInput${input}Trigger`,cfg.trigger||'close');
+    setValue(`alarmInput${input}Delay`,String(cfg.delaySeconds??0));
+    setValue(`alarmInput${input}Text`,cfg.text||'');
+    $(`alarmInput${input}TextCount`).textContent=value(`alarmInput${input}Text`).length;
+    const recipients=cfg.recipients||[];
+    for(let slot=1;slot<=5;slot++){
+      const recipient=recipients[slot-1]||{};
+      setValue(`alarmInput${input}Number${slot}`,recipient.number||'');
+      setValue(`alarmInput${input}Delivery${slot}`,String(recipient.delivery??0));
+    }
+  }
+}
+
+function buildAlarmInputs(){
+  return Array.from({length:4},(_,i)=>{
+    const input=i+1;
+    return{index:input,enabled:checked(`alarmInput${input}Enabled`),trigger:value(`alarmInput${input}Trigger`),text:value(`alarmInput${input}Text`).slice(0,160),delaySeconds:number(`alarmInput${input}Delay`),recipients:Array.from({length:5},(_,slot)=>({number:value(`alarmInput${input}Number${slot+1}`),delivery:number(`alarmInput${input}Delivery${slot+1}`)}))};
+  });
+}
+
 function refreshVisibility(){
   $('wifiStatic').classList.toggle('hidden',isDhcp('wifiIpMode'));
   $('ethernetStatic').classList.toggle('hidden',isDhcp('ethernetIpMode'));
@@ -40,6 +76,7 @@ function fillForm(c){
   setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
   setChecked('offlineTcpEnabled',c.offlineTcp.enabled);setValue('offlineTcpHost',c.offlineTcp.host);setValue('offlineTcpPort',c.offlineTcp.port);
   setChecked('alarmProgressEnabled',c.notifications?.alarmProgress!==false);
+  fillAlarmInputs(c.alarmInputs||[]);
   setValue('webUser',c.web.user);setChecked('updateCheckEnabled',c.update.checkEnabled);setChecked('updateCellularDownloads',c.update.cellularDownloads);setChecked('updateAutoInstall',c.update.autoInstall);setValue('updateInstallTime',c.update.installTime||'03:00');setValue('updateChannel',c.update.channel||'stable');setValue('updateManifestUrl',c.update.manifestUrl);setValue('updateCheckMinutes',c.update.checkMinutes);
   $('deviceTitle').textContent=c.deviceId;refreshVisibility();
   loadedSnapshot=configSnapshot();
@@ -57,6 +94,7 @@ function buildConfig(){const c=loadedConfig;return{
   mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:c.mqtt.baseTopic||'mione'},
   offlineTcp:{enabled:checked('offlineTcpEnabled'),host:value('offlineTcpHost'),port:number('offlineTcpPort'),secret:secret('commandSecret',c.offlineTcp.secret)},
   notifications:{alarmProgress:checked('alarmProgressEnabled')},
+  alarmInputs:buildAlarmInputs(),
   web:{user:value('webUser'),password:secret('webPassword',c.web.password)},
   update:{checkEnabled:checked('updateCheckEnabled'),cellularDownloads:checked('updateCellularDownloads'),autoInstall:checked('updateAutoInstall'),installTime:value('updateInstallTime')||'03:00',channel:value('updateChannel'),manifestUrl:value('updateManifestUrl'),checkMinutes:number('updateCheckMinutes')}
 }}
@@ -82,6 +120,7 @@ function escapeHtml(text){const div=document.createElement('div');div.textConten
 function formatBytes(bytes){bytes=Number(bytes)||0;if(bytes<1024)return`${bytes} B`;if(bytes<1048576)return`${(bytes/1024).toFixed(1)} KB`;if(bytes<1073741824)return`${(bytes/1048576).toFixed(1)} MB`;return`${(bytes/1073741824).toFixed(2)} GB`}
 function fileType(name){const extension=name.includes('.')?name.split('.').pop().toUpperCase():'DATEI';return `${extension}-Datei`}
 
+buildAlarmInputUi();
 document.querySelectorAll('input[type="radio"],.switch input').forEach(input=>input.addEventListener('change',()=>{refreshVisibility();updateSaveBar()}));
 document.querySelectorAll('#configForm input,#configForm select').forEach(input=>{input.addEventListener('input',updateSaveBar);input.addEventListener('change',updateSaveBar)});
 $('updateChannel').addEventListener('change',updateManifestForChannel);
