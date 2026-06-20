@@ -10,6 +10,7 @@ class ModemService {
   void loop();
   void maintainDataFallback(bool required);
   bool getNetworkTime(String &response);
+  bool downloadToFile(const String &url, const char *path, String &error);
   bool sendSms(const String &number, const String &message);
   bool ring(const String &number, uint16_t seconds);
   bool connected() const { return registered_; }
@@ -23,6 +24,10 @@ class ModemService {
  private:
   bool command(const String &value, const char *expected, uint32_t timeout = 2000);
   String readUntil(uint32_t timeout);
+  bool waitFor(const String &token, String &answer, uint32_t timeout);
+  bool readBinaryToFile(const char *path, size_t size, String &error);
+  bool downloadEc25(const String &url, const char *path, String &error);
+  bool downloadSim7500(const String &url, const char *path, String &error);
   void pollStatus();
 
   HardwareSerial serial_{2};

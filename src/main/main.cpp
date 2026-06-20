@@ -128,6 +128,7 @@ struct UpdateState {
 } updateState;
 
 void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
+bool updateNetworkReady();
 
 String chipId() {
   uint64_t mac = ESP.getEfuseMac();
@@ -189,28 +190,50 @@ void setInstalledRecoveryVersion(const String &version) {
 
 bool checkUpdateManifest(String &error) {
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
-  if (WiFi.status() != WL_CONNECTED) { error = "Update-Pruefung benoetigt WLAN"; return false; }
+  if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder Mobilfunk"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
   updateState.checking = true;
   updateState.message = "Pruefe GitHub";
   showUpdateStatus("Manifest pruefen", "GitHub wird kontaktiert", 2);
-  WiFiClientSecure tls;
-  tls.setInsecure();
-  HTTPClient request;
-  request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!request.begin(tls, config.updateManifestUrl)) { updateState.checking = false; error = "Manifest konnte nicht geoeffnet werden"; return false; }
-  int status = request.GET();
-  if (status != HTTP_CODE_OK) {
+  DynamicJsonDocument manifest(3072);
+  DeserializationError parsed;
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    HTTPClient request;
+    request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    if (!request.begin(tls, config.updateManifestUrl)) { updateState.checking = false; error = "Manifest konnte nicht geoeffnet werden"; return false; }
+    int status = request.GET();
+    if (status != HTTP_CODE_OK) {
+      request.end();
+      updateState.checking = false;
+      error = "Manifest HTTP " + String(status);
+      return false;
+    }
+    parsed = deserializeJson(manifest, request.getStream());
     request.end();
+  } else {
+    showUpdateStatus("Manifest laden", "Mobilfunk", 2);
+    if (!modem.downloadToFile(config.updateManifestUrl, BuildInfo::manifestPath, error)) {
+      updateState.checking = false;
+      return false;
+    }
+    File manifestFile = SD.open(BuildInfo::manifestPath, FILE_READ);
+    if (!manifestFile) {
+      updateState.checking = false;
+      error = "Manifest-Datei konnte nicht geoeffnet werden";
+      return false;
+    }
+    parsed = deserializeJson(manifest, manifestFile);
+    manifestFile.close();
+    SD.remove(BuildInfo::manifestPath);
+  }
+  updateState.checking = false;
+  if (parsed) {
     updateState.checking = false;
-    error = "Manifest HTTP " + String(status);
+    error = String("Manifest ungueltig: ") + parsed.c_str();
     return false;
   }
-  DynamicJsonDocument manifest(3072);
-  DeserializationError parsed = deserializeJson(manifest, request.getStream());
-  request.end();
-  updateState.checking = false;
-  if (parsed) { error = String("Manifest ungueltig: ") + parsed.c_str(); return false; }
   if (manifest["product"].as<String>() != BuildInfo::product) { error = "Manifest gehoert zu einem anderen Produkt"; return false; }
   String version = manifest["version"] | "";
   JsonObjectConst firmware = manifest["firmware"];
@@ -255,10 +278,31 @@ bool checkUpdateManifest(String &error) {
   return true;
 }
 
+bool verifyDownloadedFile(const char *path, const String &expectedMd5, String &error) {
+  File check = SD.open(path, FILE_READ);
+  if (!check) { error = "Download-Datei fehlt"; return false; }
+  MD5Builder md5;
+  md5.begin();
+  md5.addStream(check, check.size());
+  md5.calculate();
+  check.close();
+  if (md5.toString() != expectedMd5) { SD.remove(path); error = "MD5-Pruefung fehlgeschlagen"; return false; }
+  return true;
+}
+
 bool downloadToSd(const String &url, const char *path, const String &expectedMd5,
                   const String &label, uint8_t progressFrom, uint8_t progressTo,
                   String &error) {
   if (!githubUrl(url) || !validMd5(expectedMd5)) { error = "Download-Angaben ungueltig"; return false; }
+  if (WiFi.status() != WL_CONNECTED) {
+    showUpdateStatus(label, "Mobilfunk", progressFrom);
+    if (!modem.downloadToFile(url, path, error)) {
+      SD.remove(path);
+      return false;
+    }
+    showUpdateStatus(label, "MD5 wird geprueft", progressTo);
+    return verifyDownloadedFile(path, expectedMd5, error);
+  }
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
@@ -307,14 +351,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-  File check = SD.open(path, FILE_READ);
-  MD5Builder md5;
-  md5.begin();
-  md5.addStream(check, check.size());
-  md5.calculate();
-  check.close();
-  if (md5.toString() != expectedMd5) { SD.remove(path); error = "MD5-Pruefung fehlgeschlagen"; return false; }
-  return true;
+  return verifyDownloadedFile(path, expectedMd5, error);
 }
 
 bool removeSdTree(const String &path) {
@@ -555,7 +592,9 @@ bool installRecovery(const String &expectedMd5, String &error) {
 }
 
 bool prepareApprovedUpdate(String &error) {
-  if (!updateState.available || !sdReady || WiFi.status() != WL_CONNECTED) { error = "Update ist nicht bereit"; return false; }
+  if (!updateState.available) { error = "Kein Update freigegeben"; return false; }
+  if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
+  if (!updateNetworkReady()) { error = "Update benoetigt WLAN oder Mobilfunk"; return false; }
   updateState.installing = true;
   updateState.message = "Update wird geladen";
   showUpdateStatus("Update vorbereiten", "Version " + updateState.version, 4);
@@ -813,6 +852,12 @@ String activeNetworkName() {
   return "offline";
 }
 
+bool updateNetworkReady() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  if (!modem.packetDataConnected()) modem.maintainDataFallback(true);
+  return modem.packetDataConnected();
+}
+
 void maintainSystemLog(bool force = false) {
   if (!sdReady) return;
   uint32_t interval = static_cast<uint32_t>(config.logIntervalSeconds) * 1000UL;
@@ -955,8 +1000,12 @@ void setupWeb() {
     update["version"] = updateState.version;
     update["recoveryTargetVersion"] = updateState.recoveryVersion;
     update["checking"] = updateState.checking;
+    update["approved"] = updateState.approved;
     update["installing"] = updateState.installing;
+    update["failed"] = updateState.failed;
     update["message"] = updateState.message;
+    update["detail"] = updateState.detail;
+    update["progress"] = updateState.progress;
     jsonResponse(200, doc);
   });
   web.on("/api/alarm-routing", HTTP_GET, [] {
@@ -1022,6 +1071,10 @@ void setupWeb() {
       String itemPath = item.name();
       if (!itemPath.startsWith("/")) itemPath = rootPath + "/" + itemPath;
       String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
+      if (itemName.startsWith(".")) {
+        item.close();
+        continue;
+      }
       StaticJsonDocument<320> entry;
       JsonObject out = entry.to<JsonObject>();
       out["name"] = itemName;
@@ -1141,7 +1194,7 @@ void setupWeb() {
   web.on("/api/firmware/fetch", HTTP_POST, [] {
     if (!authorized()) return;
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
-    if (WiFi.status() != WL_CONNECTED) return errorResponse(503, "Firmware-Download benoetigt WLAN");
+    if (!updateNetworkReady()) return errorResponse(503, "Firmware-Download benoetigt WLAN oder Mobilfunk");
     String url = web.arg("url");
     String expected = web.arg("md5");
     expected.toLowerCase();
@@ -1149,32 +1202,9 @@ void setupWeb() {
       return errorResponse(400, "Nur GitHub-HTTPS-URLs sind erlaubt");
     }
     if (expected.length() != 32) return errorResponse(400, "MD5 muss 32 Hex-Zeichen enthalten");
-    WiFiClientSecure tls;
-    // The pinned MD5 is the mandatory payload integrity check; GitHub still uses HTTPS in transit.
-    tls.setInsecure();
-    HTTPClient request;
-    request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    if (!request.begin(tls, url)) return errorResponse(502, "Download konnte nicht gestartet werden");
-    int status = request.GET();
-    if (status != HTTP_CODE_OK) {
-      request.end();
-      return errorResponse(502, "GitHub antwortet mit HTTP " + String(status));
-    }
-    SD.remove(BuildInfo::firmwarePath);
-    File target = SD.open(BuildInfo::firmwarePath, FILE_WRITE);
-    int written = target ? request.writeToStream(&target) : -1;
-    target.close();
-    request.end();
-    if (written <= 0) return errorResponse(502, "Firmware konnte nicht gespeichert werden");
-    File firmware = SD.open(BuildInfo::firmwarePath, FILE_READ);
-    MD5Builder md5;
-    md5.begin();
-    md5.addStream(firmware, firmware.size());
-    md5.calculate();
-    firmware.close();
-    if (md5.toString() != expected) {
-      SD.remove(BuildInfo::firmwarePath);
-      return errorResponse(422, "MD5-Pruefung fehlgeschlagen");
+    String error;
+    if (!downloadToSd(url, BuildInfo::firmwarePath, expected, "Firmware laden", 20, 85, error)) {
+      return errorResponse(502, error);
     }
     web.send(200, "application/json", "{\"ok\":true,\"staged\":true}");
   });
@@ -1499,8 +1529,12 @@ void publishUpdateState() {
   doc["recoveryAvailable"] = updateState.recoveryAvailable;
   doc["version"] = updateState.version;
   doc["recoveryTargetVersion"] = updateState.recoveryVersion;
+  doc["approved"] = updateState.approved;
   doc["installing"] = updateState.installing;
+  doc["failed"] = updateState.failed;
   doc["message"] = updateState.message;
+  doc["detail"] = updateState.detail;
+  doc["progress"] = updateState.progress;
   String body;
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
