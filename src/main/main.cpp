@@ -107,6 +107,7 @@ uint32_t lastSystemLogWrite = 0;
 uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
+constexpr uint8_t kUpdateMaxAttempts = 3;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -122,6 +123,8 @@ struct UpdateState {
   bool downloadQueued = false;
   bool failed = false;
   bool downloaded = false;
+  bool manualCheckRequired = false;
+  uint8_t attempts = 0;
   String version;
   String channel;
   String firmwareUrl;
@@ -267,6 +270,9 @@ void fillUpdateStatus(JsonObject update) {
   update["downloadQueued"] = updateState.downloadQueued;
   update["downloaded"] = updateState.downloaded;
   update["failed"] = updateState.failed;
+  update["manualCheckRequired"] = updateState.manualCheckRequired;
+  update["attempts"] = updateState.attempts;
+  update["maxAttempts"] = kUpdateMaxAttempts;
   update["channel"] = updateState.channel.isEmpty() ? config.updateChannel : updateState.channel;
   update["autoInstall"] = config.updateAutoInstall;
   update["autoInstallTime"] = updateInstallTimeText();
@@ -640,6 +646,45 @@ bool commitActivatedWeb(String &error) {
     prefs.end();
   }
   return true;
+}
+
+void cleanupUpdateAttemptFiles() {
+  rollbackStagedWeb();
+  removeSdTree("/www-new");
+  SD.remove(BuildInfo::firmwarePath);
+  SD.remove(BuildInfo::recoveryPath);
+  SD.remove(BuildInfo::webPackagePath);
+  updateState.downloaded = false;
+}
+
+bool scheduleUpdateRetry(const String &phase, const String &error, bool installAttempt) {
+  cleanupUpdateAttemptFiles();
+  updateState.installing = false;
+  updateState.downloading = false;
+  updateState.approved = false;
+  updateState.downloadQueued = false;
+  updateState.detail = error;
+  updateState.progress = 0;
+  updateState.attempts = min<uint8_t>(kUpdateMaxAttempts, updateState.attempts + 1);
+  queueSystemLog("UPDATE_RETRY", "phase=" + phase + ",attempt=" + String(updateState.attempts) +
+                                 ",error=" + error);
+  if (updateState.attempts < kUpdateMaxAttempts) {
+    updateState.failed = false;
+    updateState.manualCheckRequired = false;
+    updateState.message = phase + " fehlgeschlagen, neuer Versuch " + String(updateState.attempts + 1) +
+                          " von " + String(kUpdateMaxAttempts);
+    if (installAttempt) updateState.approved = true;
+    else updateState.downloadQueued = true;
+    showUpdateStatus("Neuer OTA Versuch", String(updateState.attempts + 1) + "/" + String(kUpdateMaxAttempts), 0);
+    return true;
+  }
+  updateState.failed = true;
+  updateState.manualCheckRequired = true;
+  updateState.message = "Manuelle Pruefung erforderlich";
+  updateState.detail = error + " · " + String(kUpdateMaxAttempts) + " Versuche fehlgeschlagen";
+  showUpdateStatus("MANUELLE PRUEFUNG", "OTA Fehler 3x", 0);
+  queueSystemLog("UPDATE_MANUAL_CHECK", "phase=" + phase + ",error=" + error);
+  return false;
 }
 
 void recoverInterruptedWebUpdate() {
@@ -1196,7 +1241,7 @@ void setupWeb() {
     uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
     bool heartbeatImeiMatches = !modem.imei().isEmpty() && mioneHeartbeatImei == modem.imei();
     heartbeat["received"] = mioneHeartbeatReceivedAt != 0;
-    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= 15000 && heartbeatImeiMatches;
+    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= 60000 && heartbeatImeiMatches;
     heartbeat["ageSeconds"] = mioneHeartbeatReceivedAt ? heartbeatAge / 1000 : -1;
     heartbeat["value"] = mioneHeartbeatValue;
     heartbeat["timestampUtc"] = mioneHeartbeatTimestamp;
@@ -1375,6 +1420,8 @@ void setupWeb() {
     if (!authorized()) return;
     updateCheckRequested = true;
     updateState.failed = false;
+    updateState.manualCheckRequired = false;
+    updateState.attempts = 0;
     updateState.checking = true;
     updateState.message = "Firmwarepruefung wurde gestartet";
     updateState.detail = "Manifest wird angefordert";
@@ -1790,6 +1837,7 @@ void maintainButtons() {
 }
 
 void maintainUpdates() {
+  if (updateState.manualCheckRequired) return;
   if (updateState.approved && !updateState.installing) {
     updateState.approved = false;
     updateState.failed = false;
@@ -1798,8 +1846,7 @@ void maintainUpdates() {
     bool ok = prepareApprovedUpdate(error);
     updateStatusCanServeWeb = false;
     if (!ok) {
-      updateState.failed = true;
-      showUpdateStatus("UPDATE FEHLER", error, updateState.progress);
+      scheduleUpdateRetry("Installation", error, true);
     }
     publishUpdateState();
     return;
@@ -1812,8 +1859,7 @@ void maintainUpdates() {
     bool ok = downloadAvailableUpdateFiles(error);
     updateStatusCanServeWeb = false;
     if (!ok) {
-      updateState.failed = true;
-      showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
+      scheduleUpdateRetry("Download", error, false);
     } else if (updateAutoInstallDue()) {
       updateState.approved = true;
     }
@@ -1844,8 +1890,7 @@ void maintainUpdates() {
     bool ok = downloadAvailableUpdateFiles(error);
     updateStatusCanServeWeb = false;
     if (!ok) {
-      updateState.failed = true;
-      showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
+      scheduleUpdateRetry("Download", error, false);
     } else if (updateAutoInstallDue()) {
       updateState.approved = true;
     }

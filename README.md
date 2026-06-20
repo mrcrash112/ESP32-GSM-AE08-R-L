@@ -29,6 +29,7 @@ Implementiert:
 - Firmware-Upload oder GitHub-Download auf SD und MD5-Pruefung
 - semantischer Versionsvergleich und Updatefreigabe per Taste, Web oder MQTT
 - OLED-Fortschrittsanzeige fuer Download, MD5, WWW-Staging, Recovery und Flashvorgang
+- automatische OTA-Bereinigung und bis zu drei Neuversuche bei MD5-, Download- oder WWW-Entpackfehlern
 - optionales Recovery-Update vor der Installation der Hauptfirmware
 - separate Factory-Recovery, die nur eine bereits gepruefte SD-Datei installiert
 
@@ -122,7 +123,7 @@ mit der dort konfigurierten Modem-IMEI an.
 Alle fuenf Sekunden sendet das Geraet ausserdem einen retained Modemstatus unter
 `<mqtt_benutzername>/MiOne/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
 Datenkontext, Signal, Netzbetreiber und den vollstaendigen OTA-Status fuer
-Hauptfirmware, Recovery und WWW. MiOne wertet 15 Sekunden ohne neue Meldung als
+Hauptfirmware, Recovery und WWW. MiOne wertet 60 Sekunden ohne neue Meldung als
 Verbindungsverlust.
 
 ## Lokaler TCP-Socket
@@ -139,7 +140,7 @@ sofort abfragen.
 
 `Mobile/modemImei` enthaelt die in MiOne konfigurierte Modem-IMEI als retained
 Textwert. Der ESP vergleicht sie mit der direkt aus dem Mobilfunkmodem gelesenen
-IMEI. Der Heartbeat wird alle 5 Sekunden erwartet und gilt nach 15 Sekunden
+IMEI. Der Heartbeat wird alle 5 Sekunden erwartet und gilt nach 60 Sekunden
 ohne passendes Signal als gestoert. Beide Zustaende werden in der MQTT-Sektion
 der Config-Seite angezeigt.
 
