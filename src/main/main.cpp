@@ -108,6 +108,9 @@ uint32_t lastSystemLogWrite = 0;
 uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
+uint32_t lastDisplayVersionRefresh = 0;
+String displayRecoveryVersion;
+String displayWebVersion;
 constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
@@ -282,6 +285,25 @@ String installedWebVersion() {
   String version = prefs.getString("webVersion", "0.0.0");
   prefs.end();
   return version;
+}
+
+String shortDisplayVersion(String version) {
+  version.trim();
+  if (version.isEmpty() || version == "0.0.0") return "--";
+  version.replace("_Beta", "B");
+  version.replace("_beta", "B");
+  version.replace("-Beta", "B");
+  version.replace("-beta", "B");
+  if (version.length() > 8) version = version.substring(0, 8);
+  return version;
+}
+
+void refreshDisplayVersions(bool force = false) {
+  if (!force && !displayRecoveryVersion.isEmpty() && !displayWebVersion.isEmpty() &&
+      millis() - lastDisplayVersionRefresh < 60000) return;
+  displayRecoveryVersion = shortDisplayVersion(installedRecoveryVersion());
+  displayWebVersion = shortDisplayVersion(installedWebVersion());
+  lastDisplayVersionRefresh = millis();
 }
 
 void setInstalledRecoveryVersion(const String &version) {
@@ -2530,8 +2552,11 @@ void updateDisplay() {
   display.print("MQTT");
   drawStatusMark(92, 37, mqtt.connected());
 
-  display.setCursor(0, 52);
-  display.printf("SD:%s RTC:%s", sdReady ? "OK" : "--", rtcReady ? "OK" : "--");
+  refreshDisplayVersions();
+  display.setCursor(0, 48);
+  display.print(("FW" + shortDisplayVersion(BuildInfo::version) + " REC" + displayRecoveryVersion).substring(0, 21));
+  display.setCursor(0, 56);
+  display.print(("WEB" + displayWebVersion).substring(0, 21));
   display.display();
 }
 }  // namespace
