@@ -209,7 +209,7 @@ angewendet.
 | `GET` | `/api/status` | Laufzeitstatus |
 | `GET`, `PUT` | `/api/config` | Config lesen oder speichern |
 | `GET` | `/api/files?path=/www` | Dateien auflisten |
-| `GET` | `/api/logs?limit=250` | letzte Systemlog-Eintraege lesen |
+| `GET` | `/api/logs?limit=100` | letzte Systemlog-Eintraege lesen |
 | `GET`, `DELETE` | `/api/file?path=/www/datei` | Download oder Loeschen |
 | `POST` | `/api/file?path=/www/datei` | Multipart-Upload mit Feld `file` |
 | `POST` | `/api/firmware/fetch?url=...&md5=...` | GitHub-Datei auf SD laden |

@@ -109,8 +109,8 @@ uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
 constexpr uint8_t kUpdateMaxAttempts = 3;
-constexpr size_t kLogTailMaxBytes = 65536;
-constexpr uint16_t kLogMaxResponseLines = 500;
+constexpr size_t kLogTailMaxBytes = 16384;
+constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 
 void queueSystemLog(const String &event, const String &details);
@@ -1542,8 +1542,9 @@ void setupWeb() {
     if (!authorized()) return;
     if (!sdReady || !SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     int limit = web.arg("limit").toInt();
-    if (limit < 1) limit = 250;
+    if (limit < 1) limit = 100;
     if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
+    digitalWrite(BoardPins::ethernetCs, HIGH);
     File logFile = SD.open("/logs/system.csv", FILE_READ);
     if (!logFile) return errorResponse(500, "Systemprotokoll konnte nicht geoeffnet werden");
 
@@ -1551,17 +1552,19 @@ void setupWeb() {
     size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
     if (startOffset > 0) {
       logFile.seek(startOffset);
-      while (logFile.available()) {
+      while (logFile.position() < fileSize) {
         ++startOffset;
         if (logFile.read() == '\n') break;
+        delay(0);
       }
     }
 
     size_t scanStart = startOffset;
     uint16_t linesInWindow = 0;
     logFile.seek(scanStart);
-    while (logFile.available()) {
+    while (logFile.position() < fileSize) {
       if (logFile.read() == '\n') ++linesInWindow;
+      delay(0);
     }
     if (fileSize > 0) {
       logFile.seek(fileSize - 1);
@@ -1570,16 +1573,22 @@ void setupWeb() {
 
     uint16_t skipLines = linesInWindow > static_cast<uint16_t>(limit) ? linesInWindow - limit : 0;
     logFile.seek(scanStart);
-    while (skipLines > 0 && logFile.available()) {
+    while (skipLines > 0 && logFile.position() < fileSize) {
       if (logFile.read() == '\n') --skipLines;
+      delay(0);
     }
 
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200, "text/plain; charset=utf-8", "");
     char chunk[385];
-    while (logFile.available()) {
-      size_t read = logFile.readBytes(chunk, sizeof(chunk) - 1);
-      if (read == 0) break;
+    while (logFile.position() < fileSize) {
+      size_t remaining = fileSize - logFile.position();
+      size_t wanted = min(sizeof(chunk) - 1, remaining);
+      int read = logFile.read(reinterpret_cast<uint8_t *>(chunk), wanted);
+      if (read <= 0) break;
+      for (int i = 0; i < read; ++i) {
+        if (chunk[i] == '\0') chunk[i] = ' ';
+      }
       chunk[read] = '\0';
       web.sendContent(chunk);
       delay(0);
