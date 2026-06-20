@@ -109,20 +109,20 @@ Die aktuelle MiOne-Anwendung sendet alle fuenf Empfaenger gemeinsam als
 retained Nachricht. Alarme werden separat und nicht retained gesendet:
 
 ```text
-<mqtt_benutzername>/MiOne/Config/Mobile
-<mqtt_benutzername>/MiOne/Config/Mobile/modemImei
-<mqtt_benutzername>/MiOne/Heartbeat
-<mqtt_benutzername>/MiOne/Alarm
+<mqtt_benutzername>/Alarmfunktionen/Config/Mobile
+<mqtt_benutzername>/Alarmfunktionen/Config/Mobile/modemImei
+<mqtt_benutzername>/Alarmfunktionen/Heartbeat
+<mqtt_benutzername>/Alarmfunktionen/Alarm
 ```
 
 Wenn `Alarmfortschritt` in der Web-Konfiguration aktiviert ist, veroeffentlicht
 das Geraet fuer jede SMS und jeden Anruf `starting`, `succeeded` oder `failed`
-unter `<mqtt_benutzername>/MiOne/AlarmStatus`. Jede Meldung enthaelt IMEI,
+unter `<mqtt_benutzername>/Alarmfunktionen/AlarmStatus`. Jede Meldung enthaelt IMEI,
 Alarmcode, Alarmtext, Rufnummer und Alarmierungsart. MiOne zeigt nur Meldungen
 mit der dort konfigurierten Modem-IMEI an.
 
 Alle fuenf Sekunden sendet das Geraet ausserdem einen retained Modemstatus unter
-`<mqtt_benutzername>/MiOne/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
+`<mqtt_benutzername>/Alarmfunktionen/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
 Datenkontext, Signal, Netzbetreiber und den vollstaendigen OTA-Status fuer
 Hauptfirmware, Recovery und WWW. MiOne wertet 60 Sekunden ohne neue Meldung als
 Verbindungsverlust.
@@ -165,7 +165,7 @@ Beispiel fuer die Mobile-Konfiguration:
 ```
 
 `alarmsTo` bedeutet `0 = Anruf`, `1 = SMS`, `2 = beides`, `3 = keine
-Alarmierung`. Die frueheren Einzel-Topics unter `MiOne/config/Mobile Slot 1-5`
+Alarmierung`. Die frueheren Einzel-Topics unter `Alarmfunktionen/config/Mobile Slot 1-5`
 werden aus Kompatibilitaetsgruenden weiterhin angenommen.
 
 Die aktuelle MiOne-Anwendung sendet einen Alarm in dieser Form:
@@ -181,7 +181,7 @@ Die aktuelle MiOne-Anwendung sendet einen Alarm in dieser Form:
 }
 ```
 
-Das fruehere Topic `<mqtt_benutzername>/MiOne/Alarme` wird weiterhin empfangen.
+Das fruehere Topic `<mqtt_benutzername>/Alarmfunktionen/Alarme` wird weiterhin empfangen.
 Vor der Verarbeitung muss `modemImei` exakt der direkt aus dem Modem gelesenen
 IMEI entsprechen; andernfalls werden weder SMS noch Anrufe ausgeloest.
 

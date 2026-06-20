@@ -1338,7 +1338,7 @@ void publishDigitalInputsStatus(bool retain = true) {
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/inputs/status", body, retain);
-  if (!config.mqttUser.isEmpty()) publishMqttTopic(config.mqttUser + "/MiOne/InputStatus", body, retain);
+  if (!config.mqttUser.isEmpty()) publishMqttTopic(config.mqttUser + "/Alarmfunktionen/InputStatus", body, retain);
 }
 
 void sendInputAlarm(uint8_t index) {
@@ -1580,7 +1580,7 @@ void setupWeb() {
     doc["subscriptionReady"] = mqttMobileSubscriptionReady;
     doc["lastReceivedMs"] = mqttMobileReceivedAt;
     doc["syncMessage"] = mqttMobileSyncMessage;
-    doc["sourceTopic"] = config.mqttUser + "/MiOne/Config/Mobile";
+    doc["sourceTopic"] = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
     JsonObject heartbeat = doc.createNestedObject("heartbeat");
     uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
     bool heartbeatImeiMatches = !modem.imei().isEmpty() && mioneHeartbeatImei == modem.imei();
@@ -1592,13 +1592,13 @@ void setupWeb() {
     heartbeat["imei"] = mioneHeartbeatImei;
     heartbeat["imeiMatches"] = heartbeatImeiMatches;
     heartbeat["message"] = mioneHeartbeatMessage;
-    heartbeat["topic"] = config.mqttUser + "/MiOne/Heartbeat";
+    heartbeat["topic"] = config.mqttUser + "/Alarmfunktionen/Heartbeat";
     JsonObject imeiCheck = doc.createNestedObject("imeiCheck");
     imeiCheck["received"] = mioneImeiReceivedAt != 0;
     imeiCheck["local"] = modem.imei();
     imeiCheck["configured"] = mioneConfiguredImei;
     imeiCheck["matches"] = !modem.imei().isEmpty() && mioneConfiguredImei == modem.imei();
-    imeiCheck["topic"] = config.mqttUser + "/MiOne/Config/Mobile/modemImei";
+    imeiCheck["topic"] = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
     jsonResponse(200, doc);
   });
   web.on("/api/config", HTTP_GET, [] {
@@ -1927,9 +1927,9 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
   if (!config.mqttEnabled) return;
   String incoming(topic);
   String root = mqttDeviceRoot();
-  String mioneRoot = config.mqttUser + "/MiOne/config";
-  String mioneHeartbeatTopic = config.mqttUser + "/MiOne/Heartbeat";
-  String mioneImeiTopic = config.mqttUser + "/MiOne/Config/Mobile/modemImei";
+  String mioneRoot = config.mqttUser + "/Alarmfunktionen/config";
+  String mioneHeartbeatTopic = config.mqttUser + "/Alarmfunktionen/Heartbeat";
+  String mioneImeiTopic = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
   if (!config.mqttUser.isEmpty() && incoming == mioneImeiTopic) {
     String received;
     received.reserve(length);
@@ -1954,7 +1954,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     recordMioneHeartbeat(heartbeatImei, input["value"] | true, input["timestampUtc"] | "", "MQTT", result);
     return;
   }
-  String currentMobileTopic = config.mqttUser + "/MiOne/Config/Mobile";
+  String currentMobileTopic = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
   if (!config.mqttUser.isEmpty() && incoming == currentMobileTopic) {
     DynamicJsonDocument input(3072);
     DeserializationError parsed = deserializeJson(input, payload, length);
@@ -1996,8 +1996,8 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     }
     return;
   }
-  String currentAlarmTopic = config.mqttUser + "/MiOne/Alarm";
-  String compatibleAlarmTopic = config.mqttUser + "/MiOne/Alarme";
+  String currentAlarmTopic = config.mqttUser + "/Alarmfunktionen/Alarm";
+  String compatibleAlarmTopic = config.mqttUser + "/Alarmfunktionen/Alarme";
   if (!config.mqttUser.isEmpty() &&
       (incoming == currentAlarmTopic || incoming == compatibleAlarmTopic ||
        incoming == mioneRoot + "/Alarme")) {
@@ -2234,17 +2234,17 @@ void maintainMqtt() {
     String topic;
     mqttMobileSubscriptionReady = false;
     if (config.mqttEnabled && !config.mqttUser.isEmpty()) {
-      String mioneRoot = config.mqttUser + "/MiOne/config";
+      String mioneRoot = config.mqttUser + "/Alarmfunktionen/config";
       bool subscriptionsOk = true;
-      topic = config.mqttUser + "/MiOne/Config/Mobile";
+      topic = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/MiOne/Config/Mobile/modemImei";
+      topic = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/MiOne/Heartbeat";
+      topic = config.mqttUser + "/Alarmfunktionen/Heartbeat";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/MiOne/Alarm";
+      topic = config.mqttUser + "/Alarmfunktionen/Alarm";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/MiOne/Alarme";
+      topic = config.mqttUser + "/Alarmfunktionen/Alarme";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       for (uint8_t slot = 1; slot <= 5; ++slot) {
         topic = mioneRoot + "/Mobile Slot " + String(slot);
@@ -2253,7 +2253,7 @@ void maintainMqtt() {
       topic = mioneRoot + "/Alarme";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       mqttMobileSubscriptionReady = subscriptionsOk;
-      if (!subscriptionsOk) mqttMobileSyncMessage = "MQTT-Abonnement der MiOne-Topics fehlgeschlagen";
+      if (!subscriptionsOk) mqttMobileSyncMessage = "MQTT-Abonnement der Alarmfunktionen-Topics fehlgeschlagen";
     } else if (!config.mqttEnabled) {
       mqttMobileSyncMessage = "MQTT-Empfang deaktiviert; es werden nur Statusmeldungen gesendet";
     }
@@ -2314,7 +2314,7 @@ void publishMioneStatus(bool force) {
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/status", body, true);
   if (!config.mqttUser.isEmpty()) {
-    String topic = config.mqttUser + "/MiOne/ModemStatus";
+    String topic = config.mqttUser + "/Alarmfunktionen/ModemStatus";
     publishMqttTopic(topic, body, true);
   }
 }
@@ -2560,7 +2560,7 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 void sendAlarmProgress(const String &body) {
   if (!config.alarmProgressEnabled) return;
   if (mqttConnectedAny() && !config.mqttUser.isEmpty()) {
-    String topic = config.mqttUser + "/MiOne/AlarmStatus";
+    String topic = config.mqttUser + "/Alarmfunktionen/AlarmStatus";
     publishMqttTopic(topic, body, false);
   }
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
