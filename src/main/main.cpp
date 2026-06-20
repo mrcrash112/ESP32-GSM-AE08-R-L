@@ -515,6 +515,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     return false;
   }
   SD.remove(tempPath.c_str());
+  digitalWrite(BoardPins::ethernetCs, HIGH);
   File target = SD.open(tempPath.c_str(), FILE_WRITE);
   if (!target) {
     request.end();
@@ -543,7 +544,10 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
       }
       streamMd5.add(buffer, received);
       written += received;
-      if ((written % 4096) == 0) target.flush();
+      if ((written % 4096) == 0) {
+        digitalWrite(BoardPins::ethernetCs, HIGH);
+        target.flush();
+      }
       lastData = millis();
     } else if (millis() - lastData > 15000) {
       error = "Download-Zeitueberschreitung";
@@ -557,6 +561,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     if (total > 0) amount += " / " + String(total / 1024) + " KB";
     showUpdateStatus(label, amount, overall);
   }
+  digitalWrite(BoardPins::ethernetCs, HIGH);
   target.flush();
   target.close();
   request.end();
@@ -1288,7 +1293,7 @@ void beginSharedSpi() {
 
 void beginSd() {
   if (!config.sdEnabled) return;
-  sdReady = SD.begin(BoardPins::sdCs, SPI, 10000000);
+  sdReady = SD.begin(BoardPins::sdCs, SPI, 4000000);
   if (sdReady) {
     SD.mkdir("/www");
     SD.mkdir("/firmware");
