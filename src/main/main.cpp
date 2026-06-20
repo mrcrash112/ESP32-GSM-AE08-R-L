@@ -1289,8 +1289,6 @@ void maintainSystemLog(bool force = false) {
                   ",mqtt=" + String(mqtt.connected() ? 1 : 0) +
                   ",sd=1,rtc=" + String(rtcReady ? 1 : 0) +
                   ",buttonAvg=" + String(currentButtonAdc) +
-                  ",heartbeatAge=" + String(mioneHeartbeatReceivedAt
-                                                 ? (millis() - mioneHeartbeatReceivedAt) / 1000 : UINT32_MAX) +
                   ",heap=" + String(ESP.getFreeHeap());
   queueSystemLog("STATUS", status);
 

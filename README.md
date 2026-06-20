@@ -54,7 +54,8 @@ Standardintervall betraegt 10 Sekunden und kann zwischen 10 und 3600 Sekunden
 eingestellt werden. Protokolliert werden unter anderem Bootzaehler und
 Resetgrund, Alarmempfaenger und Versandresultat, MQTT-Zustand, Netzwerkweg, IP,
 WLAN-RSSI, Mobilfunk-CSQ/dBm, Netzbetreiber, Registrierung, Datenkontext,
-Heartbeat-Alter, Tastenmittelwert, RTC, SD und freier Heap.
+Tastenmittelwert, RTC, SD und freier Heap. Heartbeats werden zum Schutz der
+SD-Karte nicht protokolliert.
 `MOBILE_CONFIG` wird nur bei einer tatsaechlichen Aenderung erzeugt und nennt
 je Slot die alten und neuen Werte fuer Rufnummer, Aktivstatus und Alarmierungsart
 sowie Aenderungen des Technical-Zeitfensters. Unveraenderte MQTT-Wiederholungen
