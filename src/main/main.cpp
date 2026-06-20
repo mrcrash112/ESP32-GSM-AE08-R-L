@@ -457,25 +457,39 @@ String fileCheckDetail(size_t actualSize, size_t expectedSize, const String &act
   return detail;
 }
 
-String fileMd5(const char *path) {
-  digitalWrite(BoardPins::ethernetCs, HIGH);
-  File check = SD.open(path, FILE_READ);
-  if (!check) return "";
+bool calculateFileMd5(File &file, String &value, size_t &checkedBytes) {
+  if (!file) return false;
+  size_t total = file.size();
+  checkedBytes = 0;
+  value = "";
+  if (!file.seek(0)) return false;
   MD5Builder md5;
   md5.begin();
   uint8_t buffer[1024];
-  while (check.available()) {
-    size_t count = check.read(buffer, sizeof(buffer));
-    if (count == 0) {
-      check.close();
-      return "";
-    }
-    md5.add(buffer, count);
+  while (checkedBytes < total) {
+    size_t wanted = min(sizeof(buffer), total - checkedBytes);
+    int count = file.read(buffer, wanted);
+    if (count <= 0) return false;
+    md5.add(buffer, static_cast<uint16_t>(count));
+    checkedBytes += static_cast<size_t>(count);
     delay(0);
   }
   md5.calculate();
+  value = md5.toString();
+  file.seek(0);
+  return true;
+}
+
+String fileMd5(const char *path, size_t *checkedBytes = nullptr) {
+  digitalWrite(BoardPins::ethernetCs, HIGH);
+  File check = SD.open(path, FILE_READ);
+  if (!check) return "";
+  size_t checked = 0;
+  String value;
+  bool ok = calculateFileMd5(check, value, checked);
   check.close();
-  return md5.toString();
+  if (checkedBytes) *checkedBytes = checked;
+  return ok ? value : "";
 }
 
 bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t expectedSize, String &error) {
@@ -489,24 +503,17 @@ bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t ex
     error = "Download-Groesse falsch (" + fileCheckDetail(actualSize, expectedSize, "", expectedMd5) + " Byte)";
     return false;
   }
-  MD5Builder md5;
-  md5.begin();
-  uint8_t buffer[1024];
-  while (check.available()) {
-    size_t count = check.read(buffer, sizeof(buffer));
-    if (count == 0) {
-      check.close();
-      SD.remove(path);
-      error = "Download-Datei konnte nicht gelesen werden";
-      return false;
-    }
-    md5.add(buffer, count);
-    delay(0);
-  }
-  md5.calculate();
+  size_t checkedBytes = 0;
+  String actualMd5;
+  bool md5Ok = calculateFileMd5(check, actualMd5, checkedBytes);
   check.close();
-  String actualMd5 = md5.toString();
-  if (actualMd5 != expectedMd5) {
+  if (!md5Ok || checkedBytes != actualSize) {
+    SD.remove(path);
+    error = "Download-Datei konnte nicht vollstaendig gelesen werden (Ist " + String(checkedBytes) +
+            " / Soll " + String(actualSize) + " Byte)";
+    return false;
+  }
+  if (!actualMd5.equalsIgnoreCase(expectedMd5)) {
     SD.remove(path);
     error = "MD5-Pruefung fehlgeschlagen (" + fileCheckDetail(actualSize, expectedSize, actualMd5, expectedMd5) + ")";
     return false;
@@ -602,7 +609,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
         error = "Download konnte nicht gespeichert werden";
         break;
       }
-      streamMd5.add(buffer, received);
+      streamMd5.add(buffer, static_cast<uint16_t>(received));
       written += received;
       if ((written % 4096) == 0) {
         digitalWrite(BoardPins::ethernetCs, HIGH);
@@ -639,8 +646,9 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-  String storedHash = fileMd5(tempPath.c_str());
-  bool verified = storedHash == expectedMd5;
+  size_t checkedBytes = 0;
+  String storedHash = fileMd5(tempPath.c_str(), &checkedBytes);
+  bool verified = storedHash.equalsIgnoreCase(expectedMd5);
   if (!verified) {
     error = "MD5-Pruefung fehlgeschlagen (" + fileCheckDetail(written, expectedSize, storedHash, expectedMd5) + ")";
     SD.remove(tempPath.c_str());
@@ -654,7 +662,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   }
   queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
                  logBase + ",written=" + String(written) + ",httpSize=" + String(total) +
-                 ",streamMd5=" + streamHash + ",fileMd5=" + storedHash +
+                 ",streamMd5=" + streamHash + ",fileMd5=" + storedHash + ",checked=" + String(checkedBytes) +
                  (verified ? ",stored=1" : ",error=" + error));
   updateStatusCanServeWeb = previousStatusServing;
   return verified;

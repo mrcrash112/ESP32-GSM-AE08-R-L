@@ -120,13 +120,16 @@ bool actualMd5(File &file, String &value) {
   size_t size = file.size();
   size_t checked = 0;
   uint8_t buffer[1024];
-  while (file.available()) {
-    size_t count = file.read(buffer, sizeof(buffer));
-    if (!count) return false;
-    md5.add(buffer, count);
-    checked += count;
+  if (!file.seek(0)) return false;
+  while (checked < size) {
+    size_t wanted = min(sizeof(buffer), size - checked);
+    int count = file.read(buffer, wanted);
+    if (count <= 0) return false;
+    md5.add(buffer, static_cast<uint16_t>(count));
+    checked += static_cast<size_t>(count);
     showStatus("Firmware pruefen", String(checked / 1024) + " / " + String(size / 1024) + " KB",
                12 + min<size_t>(18, checked * 18 / size));
+    delay(0);
   }
   md5.calculate();
   value = md5.toString();
