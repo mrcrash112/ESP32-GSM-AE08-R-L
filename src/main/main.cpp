@@ -85,7 +85,7 @@ String mioneHeartbeatImei;
 String mioneHeartbeatTimestamp;
 String mioneHeartbeatMessage = "Noch kein Heartbeat empfangen";
 uint32_t heartbeatMonitorStartedAt = 0;
-bool heartbeatAlarmActive = false;
+uint32_t lastHeartbeatAlarmAt = 0;
 uint32_t mioneImeiReceivedAt = 0;
 String mioneConfiguredImei;
 uint32_t lastDisplay = 0;
@@ -1877,8 +1877,8 @@ bool recordMioneHeartbeat(const String &imei, bool value, const String &timestam
   mioneHeartbeatReceivedAt = millis();
   bool ok = !modem.imei().isEmpty() && imei == modem.imei();
   if (ok && value) {
-    heartbeatAlarmActive = false;
     heartbeatMonitorStartedAt = millis();
+    lastHeartbeatAlarmAt = 0;
   }
   result = ok ? "Heartbeat empfangen" : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
   mioneHeartbeatMessage = result + " (" + source + ")";
@@ -1912,13 +1912,14 @@ void sendHeartbeatAlarm() {
 void maintainHeartbeatAlarm() {
   if (!config.mqttEnabled || !mqttConnectedAny()) {
     heartbeatMonitorStartedAt = 0;
-    heartbeatAlarmActive = false;
+    lastHeartbeatAlarmAt = 0;
     return;
   }
   if (validMioneHeartbeat()) return;
   if (!heartbeatMonitorStartedAt) heartbeatMonitorStartedAt = millis();
-  if (heartbeatAlarmActive || millis() - heartbeatMonitorStartedAt < kHeartbeatAlarmMs) return;
-  heartbeatAlarmActive = true;
+  if (millis() - heartbeatMonitorStartedAt < kHeartbeatAlarmMs) return;
+  if (lastHeartbeatAlarmAt && millis() - lastHeartbeatAlarmAt < kHeartbeatAlarmMs) return;
+  lastHeartbeatAlarmAt = millis();
   sendHeartbeatAlarm();
 }
 
