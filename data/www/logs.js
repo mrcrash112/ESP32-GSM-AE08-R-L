@@ -4,7 +4,7 @@ const entries=document.getElementById('entries');
 const count=document.getElementById('count');
 const state=document.getElementById('state');
 
-function requestedLimit(){return Math.min(2000,Math.max(1,Number(limitInput.value)||250))}
+function requestedLimit(){return Math.min(500,Math.max(1,Number(limitInput.value)||250))}
 function cell(row,text){const value=document.createElement('td');value.textContent=text;row.appendChild(value)}
 
 async function loadLogs(){

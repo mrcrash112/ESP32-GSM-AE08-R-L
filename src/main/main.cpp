@@ -108,6 +108,8 @@ uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
 constexpr uint8_t kUpdateMaxAttempts = 3;
+constexpr size_t kLogTailMaxBytes = 65536;
+constexpr uint16_t kLogMaxResponseLines = 500;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -1509,47 +1511,46 @@ void setupWeb() {
     if (!sdReady || !SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     int limit = web.arg("limit").toInt();
     if (limit < 1) limit = 250;
-    if (limit > 2000) limit = 2000;
+    if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
     File logFile = SD.open("/logs/system.csv", FILE_READ);
     if (!logFile) return errorResponse(500, "Systemprotokoll konnte nicht geoeffnet werden");
 
-    size_t size = logFile.size();
-    size_t position = size;
-    size_t startOffset = 0;
-    uint16_t lineBreaks = 0;
-    bool trailingBreakSkipped = false;
-    uint8_t buffer[256];
-    bool found = false;
-    while (position > 0 && !found) {
-      size_t blockStart = position > sizeof(buffer) ? position - sizeof(buffer) : 0;
-      size_t blockSize = position - blockStart;
-      logFile.seek(blockStart);
-      size_t read = logFile.read(buffer, blockSize);
-      for (size_t i = read; i > 0; --i) {
-        if (buffer[i - 1] != '\n') continue;
-        size_t absolute = blockStart + i - 1;
-        if (!trailingBreakSkipped && absolute == size - 1) {
-          trailingBreakSkipped = true;
-          continue;
-        }
-        ++lineBreaks;
-        if (lineBreaks == limit) {
-          startOffset = absolute + 1;
-          found = true;
-          break;
-        }
+    size_t fileSize = logFile.size();
+    size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
+    if (startOffset > 0) {
+      logFile.seek(startOffset);
+      while (logFile.available()) {
+        ++startOffset;
+        if (logFile.read() == '\n') break;
       }
-      position = blockStart;
     }
-    logFile.seek(startOffset);
-    web.setContentLength(size - startOffset);
-    web.send(200, "text/plain; charset=utf-8", "");
-    String chunk;
-    chunk.reserve(512);
+
+    size_t scanStart = startOffset;
+    uint16_t linesInWindow = 0;
+    logFile.seek(scanStart);
     while (logFile.available()) {
-      chunk = "";
-      while (logFile.available() && chunk.length() < 512) chunk += static_cast<char>(logFile.read());
+      if (logFile.read() == '\n') ++linesInWindow;
+    }
+    if (fileSize > 0) {
+      logFile.seek(fileSize - 1);
+      if (logFile.read() != '\n') ++linesInWindow;
+    }
+
+    uint16_t skipLines = linesInWindow > static_cast<uint16_t>(limit) ? linesInWindow - limit : 0;
+    logFile.seek(scanStart);
+    while (skipLines > 0 && logFile.available()) {
+      if (logFile.read() == '\n') --skipLines;
+    }
+
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200, "text/plain; charset=utf-8", "");
+    char chunk[385];
+    while (logFile.available()) {
+      size_t read = logFile.readBytes(chunk, sizeof(chunk) - 1);
+      if (read == 0) break;
+      chunk[read] = '\0';
       web.sendContent(chunk);
+      delay(0);
     }
     logFile.close();
     web.sendContent("");
@@ -2321,7 +2322,6 @@ void processAlarmSocketLine(const String &line) {
   } else if (String(input["type"] | "") == "statusRequest" ||
              String(input["type"] | "") == "updateStatus") {
     sendSocketModemStatus();
-    queueSystemLog("TCP_STATUS", "Status an MiOne gesendet");
     return;
   } else if (input["mobile"].is<JsonArrayConst>()) {
     ok = alarmRouter.updateMobileSlots(input.as<JsonObjectConst>(), modem.imei(), result);
