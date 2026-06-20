@@ -127,9 +127,9 @@ Datenkontext, Signal, Netzbetreiber und den vollstaendigen OTA-Status fuer
 Hauptfirmware, Recovery und WWW. MiOne wertet 60 Sekunden ohne neue Meldung als
 Verbindungsverlust.
 
-## Lokaler TCP-Socket
+## TCP-Socket Direktverbindung
 
-Bei aktiviertem Offline-TCP lauscht das Geraet im WLAN und Ethernet auf dem
+Bei aktivierter TCP-Socket Direktverbindung lauscht das Geraet im WLAN und Ethernet auf dem
 konfigurierten TCP-Port. In MiOne werden die IP-Adresse des Modems und derselbe
 Port eingetragen. MiOne sendet ein JSON-Objekt mit Zeilenumbruch und haelt die
 Verbindung fuer die Alarmbearbeitung offen. Das Modem antwortet mit denselben

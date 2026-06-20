@@ -102,7 +102,7 @@
         </section>
 
         <section class="card" id="services">
-          <div class="section-heading"><div><span class="step">03</span><h2>Dienste</h2><p>MQTT-Anbindung und direkter Offline-TCP-Kanal.</p></div></div>
+          <div class="section-heading"><div><span class="step">03</span><h2>Dienste</h2><p>MQTT-Anbindung und TCP-Socket Direktverbindung.</p></div></div>
           <div class="subsection" data-feature="mqtt">
             <div class="subsection-title"><div><h3>MQTT</h3><p>Kommunikation mit Mione und dem zentralen Broker.</p></div><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="mqtt-connection waiting" id="mqttConnection">
@@ -125,7 +125,7 @@
             </div>
           </div>
           <div class="subsection" data-feature="offlineTcp">
-            <div class="subsection-title"><div><h3>Offline-TCP</h3><p>Direkter Befehlskanal im lokalen WLAN oder Ethernet.</p></div><label class="switch"><input id="offlineTcpEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
+            <div class="subsection-title"><div><h3>TCP-Socket Direktverbindung</h3><p>Direkter Befehlskanal im lokalen WLAN oder Ethernet.</p></div><label class="switch"><input id="offlineTcpEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="fields two">
               <label><span>Hinweis / Gegenstelle (optional)</span><input id="offlineTcpHost" type="text" maxlength="128" placeholder="MiOne-PC"></label>
               <label><span>TCP-Listen-Port</span><input id="offlineTcpPort" type="number" min="1" max="65535" value="5000"></label>
