@@ -105,6 +105,8 @@ uint32_t modemActivityUntil = 0;
 String pendingSystemLog;
 uint32_t lastSystemLogWrite = 0;
 uint32_t lastUpdateDisplayAt = 0;
+uint32_t lastUpdateStatusServeAt = 0;
+bool updateStatusCanServeWeb = false;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -362,7 +364,7 @@ bool checkUpdateManifest(String &error) {
   updateState.webVersion = webVersion;
   updateState.webUrl = webUrl;
   updateState.webMd5 = webMd5;
-  updateState.downloaded =
+  updateState.downloaded = updateState.available &&
       (!recoveryAvailable || downloadedFileReady(BuildInfo::recoveryPath, recoveryMd5)) &&
       (!firmwareAvailable || downloadedFileReady(BuildInfo::firmwarePath, firmwareMd5)) &&
       (!webAvailable || downloadedFileReady(BuildInfo::webPackagePath, webMd5));
@@ -1792,7 +1794,10 @@ void maintainUpdates() {
     updateState.approved = false;
     updateState.failed = false;
     String error;
-    if (!prepareApprovedUpdate(error)) {
+    updateStatusCanServeWeb = true;
+    bool ok = prepareApprovedUpdate(error);
+    updateStatusCanServeWeb = false;
+    if (!ok) {
       updateState.failed = true;
       showUpdateStatus("UPDATE FEHLER", error, updateState.progress);
     }
@@ -1803,7 +1808,10 @@ void maintainUpdates() {
   if (updateState.downloadQueued) {
     updateState.downloadQueued = false;
     String error;
-    if (!downloadAvailableUpdateFiles(error)) {
+    updateStatusCanServeWeb = true;
+    bool ok = downloadAvailableUpdateFiles(error);
+    updateStatusCanServeWeb = false;
+    if (!ok) {
       updateState.failed = true;
       showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
     } else if (updateAutoInstallDue()) {
@@ -1832,7 +1840,10 @@ void maintainUpdates() {
   }
   if (updateState.available && !updateState.downloaded && !updateState.failed) {
     String error;
-    if (!downloadAvailableUpdateFiles(error)) {
+    updateStatusCanServeWeb = true;
+    bool ok = downloadAvailableUpdateFiles(error);
+    updateStatusCanServeWeb = false;
+    if (!ok) {
       updateState.failed = true;
       showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
     } else if (updateAutoInstallDue()) {
@@ -1982,6 +1993,10 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
   updateState.message = step;
   updateState.detail = detail;
   updateState.progress = min<uint8_t>(progress, 100);
+  if (updateStatusCanServeWeb && millis() - lastUpdateStatusServeAt >= 250) {
+    lastUpdateStatusServeAt = millis();
+    web.handleClient();
+  }
   if (!displayReady || (millis() - lastUpdateDisplayAt < 100 && progress < 100)) return;
   lastUpdateDisplayAt = millis();
   renderUpdateStatus(step, detail, progress);
