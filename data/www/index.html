@@ -97,6 +97,7 @@
             <label><span>APN-Benutzer</span><input id="apnUser" type="text" maxlength="64" placeholder="Optional"></label>
             <label><span>APN-Passwort</span><div class="password"><input id="apnPassword" type="password" maxlength="64" placeholder="Optional"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
           </div>
+          <div class="actions modem-actions"><button type="button" class="button danger" id="modemFactoryReset">Modem-Auslieferungszustand</button></div>
         </section>
 
         <section class="card" id="services">
@@ -166,6 +167,7 @@
           <div class="fields two">
             <label class="wide"><span>GitHub-Manifest-URL</span><input id="updateManifestUrl" type="url" maxlength="240" placeholder="https://raw.githubusercontent.com/…/firmware.json"></label>
             <label><span>Prüfintervall</span><select id="updateCheckMinutes"><option value="15">Alle 15 Minuten</option><option value="60">Stündlich</option><option value="360">Alle 6 Stunden</option><option value="720">Alle 12 Stunden</option><option value="1440">Täglich</option><option value="10080">Wöchentlich</option></select></label>
+            <label class="switch-line"><input id="updateCellularDownloads" type="checkbox"><span><b>OTA-Downloads über Mobilfunk erlauben</b><small>Standardmäßig aus. Wenn kein WLAN verfügbar ist, darf das Gerät Firmware und Webseitenpakete über die SIM-Karte laden.</small></span></label>
           </div>
           <div class="update-panel">
             <div class="installed-versions">

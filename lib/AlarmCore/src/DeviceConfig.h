@@ -51,6 +51,7 @@ struct DeviceConfig {
   String webPassword;
 
   bool updateCheckEnabled = true;
+  bool updateCellularDownloads = false;
   String updateManifestUrl;
   uint16_t updateCheckMinutes = 360;
 

@@ -94,6 +94,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
 
   JsonObject update = root.createNestedObject("update");
   update["checkEnabled"] = updateCheckEnabled;
+  update["cellularDownloads"] = updateCellularDownloads;
   update["manifestUrl"] = updateManifestUrl;
   update["checkMinutes"] = updateCheckMinutes;
 }
@@ -150,6 +151,7 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
 
   JsonObjectConst update = root["update"];
   updateCheckEnabled = update["checkEnabled"] | updateCheckEnabled;
+  updateCellularDownloads = update["cellularDownloads"] | updateCellularDownloads;
   updateManifestUrl = update["manifestUrl"] | updateManifestUrl;
   updateCheckMinutes = update["checkMinutes"] | updateCheckMinutes;
   return validate(error);

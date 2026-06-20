@@ -11,6 +11,7 @@ class ModemService {
   void maintainDataFallback(bool required);
   bool getNetworkTime(String &response);
   bool downloadToFile(const String &url, const char *path, String &error);
+  bool restoreFactoryDefaults(String &error);
   bool sendSms(const String &number, const String &message);
   bool ring(const String &number, uint16_t seconds);
   bool connected() const { return registered_; }

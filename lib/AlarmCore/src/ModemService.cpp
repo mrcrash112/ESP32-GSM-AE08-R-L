@@ -121,6 +121,25 @@ bool ModemService::downloadToFile(const String &url, const char *path, String &e
   return false;
 }
 
+bool ModemService::restoreFactoryDefaults(String &error) {
+  if (!enabled_ || modemType_.isEmpty()) { error = "Mobilfunkmodem ist nicht bereit"; return false; }
+  packetDataConnected_ = false;
+  while (serial_.available()) serial_.read();
+  if (!command("AT", "OK", 3000)) { error = "Modem antwortet nicht"; return false; }
+  if (!command("AT&F", "OK", 10000)) { error = "Factory-Defaults wurden vom Modem nicht angenommen"; return false; }
+  if (!command("AT&W", "OK", 10000)) { error = "Factory-Defaults konnten nicht gespeichert werden"; return false; }
+  if (modemType_ == "EC25") command("AT+CFUN=1,1", "OK", 5000);
+  else command("AT+CRESET", "OK", 5000);
+  delay(4000);
+  command("AT", "OK", 3000);
+  command("ATE0", "OK", 1000);
+  command("AT+CMGF=1", "OK", 1000);
+  serial_.println("AT+GSN");
+  imei_ = extractImei(readUntil(1500));
+  pollStatus();
+  return true;
+}
+
 void ModemService::loop() {
   if (enabled_ && millis() - lastPoll_ >= 15000) pollStatus();
 }

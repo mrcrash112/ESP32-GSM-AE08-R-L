@@ -190,7 +190,7 @@ void setInstalledRecoveryVersion(const String &version) {
 
 bool checkUpdateManifest(String &error) {
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
-  if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder Mobilfunk"; return false; }
+  if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
   updateState.checking = true;
   updateState.message = "Pruefe GitHub";
@@ -594,7 +594,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
 bool prepareApprovedUpdate(String &error) {
   if (!updateState.available) { error = "Kein Update freigegeben"; return false; }
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
-  if (!updateNetworkReady()) { error = "Update benoetigt WLAN oder Mobilfunk"; return false; }
+  if (!updateNetworkReady()) { error = "Update benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
   updateState.installing = true;
   updateState.message = "Update wird geladen";
   showUpdateStatus("Update vorbereiten", "Version " + updateState.version, 4);
@@ -854,6 +854,7 @@ String activeNetworkName() {
 
 bool updateNetworkReady() {
   if (WiFi.status() == WL_CONNECTED) return true;
+  if (!config.updateCellularDownloads) return false;
   if (!modem.packetDataConnected()) modem.maintainDataFallback(true);
   return modem.packetDataConnected();
 }
@@ -1056,6 +1057,13 @@ void setupWeb() {
     queueSystemLog("CONFIG", "Konfiguration gespeichert, Neustart geplant");
     restartAt = millis() + 250;
   });
+  web.on("/api/modem/factory-reset", HTTP_POST, [] {
+    if (!authorized()) return;
+    String error;
+    if (!modem.restoreFactoryDefaults(error)) return errorResponse(502, error);
+    queueSystemLog("MODEM", "Factory-Defaults gesetzt");
+    web.send(200, "application/json", "{\"ok\":true}");
+  });
   web.on("/api/files", HTTP_GET, [] {
     if (!authorized()) return;
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
@@ -1194,7 +1202,7 @@ void setupWeb() {
   web.on("/api/firmware/fetch", HTTP_POST, [] {
     if (!authorized()) return;
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
-    if (!updateNetworkReady()) return errorResponse(503, "Firmware-Download benoetigt WLAN oder Mobilfunk");
+    if (!updateNetworkReady()) return errorResponse(503, "Firmware-Download benoetigt WLAN oder aktivierte Mobilfunkdownloads");
     String url = web.arg("url");
     String expected = web.arg("md5");
     expected.toLowerCase();

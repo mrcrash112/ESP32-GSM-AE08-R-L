@@ -35,7 +35,7 @@ function fillForm(c){
   setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
   setChecked('offlineTcpEnabled',c.offlineTcp.enabled);setValue('offlineTcpHost',c.offlineTcp.host);setValue('offlineTcpPort',c.offlineTcp.port);
   setChecked('alarmProgressEnabled',c.notifications?.alarmProgress!==false);
-  setValue('webUser',c.web.user);setChecked('updateCheckEnabled',c.update.checkEnabled);setValue('updateManifestUrl',c.update.manifestUrl);setValue('updateCheckMinutes',c.update.checkMinutes);
+  setValue('webUser',c.web.user);setChecked('updateCheckEnabled',c.update.checkEnabled);setChecked('updateCellularDownloads',c.update.cellularDownloads);setValue('updateManifestUrl',c.update.manifestUrl);setValue('updateCheckMinutes',c.update.checkMinutes);
   $('deviceTitle').textContent=c.deviceId;refreshVisibility();
   loadedSnapshot=configSnapshot();
   updateSaveBar();
@@ -53,7 +53,7 @@ function buildConfig(){const c=loadedConfig;return{
   offlineTcp:{enabled:checked('offlineTcpEnabled'),host:value('offlineTcpHost'),port:number('offlineTcpPort'),secret:secret('commandSecret',c.offlineTcp.secret)},
   notifications:{alarmProgress:checked('alarmProgressEnabled')},
   web:{user:value('webUser'),password:secret('webPassword',c.web.password)},
-  update:{checkEnabled:checked('updateCheckEnabled'),manifestUrl:value('updateManifestUrl'),checkMinutes:number('updateCheckMinutes')}
+  update:{checkEnabled:checked('updateCheckEnabled'),cellularDownloads:checked('updateCellularDownloads'),manifestUrl:value('updateManifestUrl'),checkMinutes:number('updateCheckMinutes')}
 }}
 
 function configSnapshot(){return loadedConfig?JSON.stringify(buildConfig()):''}
@@ -79,6 +79,7 @@ document.querySelectorAll('.sidebar a').forEach(link=>link.addEventListener('cli
 $('configForm').addEventListener('submit',async event=>{event.preventDefault();if(configSnapshot()===loadedSnapshot){updateSaveBar();return}if(!event.currentTarget.reportValidity())return;const button=$('saveButton');button.disabled=true;button.textContent='Wird gespeichert …';try{await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});notify('Konfiguration gespeichert. Das Gerät startet neu.')}catch(error){notify(error.message,true);button.disabled=false;button.textContent='Konfiguration speichern'}});
 $('checkUpdate').addEventListener('click',async()=>{try{await api('/api/firmware/check',{method:'POST'});notify('Firmwareprüfung wurde gestartet.');setTimeout(loadStatus,1800)}catch(error){notify(error.message,true)}});
 $('approveUpdate').addEventListener('click',async()=>{if(!confirm('Firmwareupdate jetzt laden und installieren?'))return;otaInProgress=true;$('approveUpdate').hidden=true;$('updateMessage').textContent='Update wurde freigegeben. Gerät lädt und installiert …';try{await api('/api/firmware/approve',{method:'POST'});notify('Update bestätigt. Download wird gestartet.');setTimeout(loadStatus,1000)}catch(error){if(networkError(error)){notify('Freigabe gesendet. Das Gerät ist vermutlich bereits im Update.');return}otaInProgress=false;notify(error.message,true)}});
+$('modemFactoryReset').addEventListener('click',async()=>{if(!confirm('Modem wirklich in den Auslieferungszustand versetzen? APN- und Modemeinstellungen im Modul werden zurückgesetzt.'))return;const button=$('modemFactoryReset');button.disabled=true;button.textContent='Modem wird zurückgesetzt …';try{await api('/api/modem/factory-reset',{method:'POST'});notify('Modem wurde in den Auslieferungszustand versetzt.');setTimeout(loadStatus,1500)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.textContent='Modem-Auslieferungszustand'}});
 $('fileDirectory').addEventListener('change',()=>{currentDirectory=value('fileDirectory');loadFiles()});$('refreshFiles').addEventListener('click',loadFiles);
 $('parentDirectory').addEventListener('click',()=>{currentDirectory=currentDirectory.substring(0,currentDirectory.lastIndexOf('/'))||value('fileDirectory');loadFiles()});
 $('fileUpload').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;const path=`${currentDirectory}/${file.name}`;const data=new FormData();data.append('file',file);try{await api(`/api/file?path=${encodeURIComponent(path)}`,{method:'POST',body:data});notify(`${file.name} wurde hochgeladen.`);loadFiles()}catch(error){notify(error.message,true)}event.target.value=''});
