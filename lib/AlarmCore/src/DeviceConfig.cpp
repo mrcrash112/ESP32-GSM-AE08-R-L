@@ -29,6 +29,21 @@ bool safeAtValue(const String &value) {
   return value.indexOf('"') < 0 && value.indexOf('\r') < 0 && value.indexOf('\n') < 0;
 }
 
+String timeText(uint16_t minuteOfDay) {
+  char value[8];
+  snprintf(value, sizeof(value), "%02u:%02u", minuteOfDay / 60, minuteOfDay % 60);
+  return value;
+}
+
+bool parseTimeText(const String &value, uint16_t &minuteOfDay) {
+  if (value.length() != 5 || value.charAt(2) != ':') return false;
+  int hour = value.substring(0, 2).toInt();
+  int minute = value.substring(3, 5).toInt();
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+  minuteOfDay = static_cast<uint16_t>(hour * 60 + minute);
+  return true;
+}
+
 void secret(JsonObject out, const char *key, const String &value, bool include) {
   out[key] = include ? value : (value.isEmpty() ? "" : "***");
 }
@@ -96,6 +111,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   update["checkEnabled"] = updateCheckEnabled;
   update["cellularDownloads"] = updateCellularDownloads;
   update["autoInstall"] = updateAutoInstall;
+  update["installTime"] = timeText(updateInstallMinute);
   update["channel"] = updateChannel;
   update["manifestUrl"] = updateManifestUrl;
   update["checkMinutes"] = updateCheckMinutes;
@@ -155,6 +171,10 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   updateCheckEnabled = update["checkEnabled"] | updateCheckEnabled;
   updateCellularDownloads = update["cellularDownloads"] | updateCellularDownloads;
   updateAutoInstall = update["autoInstall"] | updateAutoInstall;
+  if (update["installTime"].is<const char *>()) {
+    uint16_t parsedMinute = updateInstallMinute;
+    if (parseTimeText(update["installTime"].as<String>(), parsedMinute)) updateInstallMinute = parsedMinute;
+  }
   updateChannel = update["channel"] | updateChannel;
   updateManifestUrl = update["manifestUrl"] | updateManifestUrl;
   updateCheckMinutes = update["checkMinutes"] | updateCheckMinutes;
@@ -173,6 +193,7 @@ bool DeviceConfig::validate(String &error) const {
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";
   else if (webUser.isEmpty() || webPassword.length() < 8) error = "Web-Zugang benoetigt ein Passwort mit mindestens 8 Zeichen";
   else if (commandSecret.length() < 8) error = "Befehls-Secret muss mindestens 8 Zeichen lang sein";
+  else if (updateInstallMinute >= 1440) error = "Installationszeit fuer Updates ist ungueltig";
   else if (updateChannel != "stable" && updateChannel != "beta") error = "Firmware-Kanal muss stable oder beta sein";
   else if (updateCheckEnabled && !updateManifestUrl.isEmpty() && !updateManifestUrl.startsWith("https://github.com/") && !updateManifestUrl.startsWith("https://raw.githubusercontent.com/")) error = "Update-Manifest muss von GitHub per HTTPS geladen werden";
   else if (updateCheckMinutes < 5) error = "Update-Pruefintervall muss mindestens 5 Minuten betragen";

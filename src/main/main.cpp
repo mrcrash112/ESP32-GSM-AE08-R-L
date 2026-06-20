@@ -135,6 +135,27 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 bool updateNetworkReady();
 bool downloadedFileReady(const char *path, const String &expectedMd5);
 
+String updateInstallTimeText() {
+  char value[8];
+  snprintf(value, sizeof(value), "%02u:%02u", config.updateInstallMinute / 60, config.updateInstallMinute % 60);
+  return value;
+}
+
+bool updateAutoInstallDue() {
+  if (!config.updateAutoInstall) return false;
+  if (!rtcReady) {
+    updateState.message = "Update-Dateien geladen, RTC fuer Auto-Installation fehlt";
+    return false;
+  }
+  DateTime now = rtc.now();
+  uint16_t minuteOfDay = static_cast<uint16_t>(now.hour() * 60 + now.minute());
+  if (minuteOfDay != config.updateInstallMinute) {
+    updateState.message = "Update-Dateien geladen, Installation um " + updateInstallTimeText();
+    return false;
+  }
+  return true;
+}
+
 String chipId() {
   uint64_t mac = ESP.getEfuseMac();
   char value[13];
@@ -684,7 +705,7 @@ bool downloadAvailableUpdateFiles(String &error) {
   }
   updateState.downloading = false;
   updateState.downloaded = true;
-  updateState.message = config.updateAutoInstall ? "Update-Dateien geladen, Installation startet" :
+  updateState.message = config.updateAutoInstall ? "Update-Dateien geladen, Installation um " + updateInstallTimeText() :
                                                    "Update-Dateien geladen, Freigabe erforderlich";
   showUpdateStatus("Download fertig", updateState.version, 82);
   queueSystemLog("UPDATE_DOWNLOAD", "version=" + updateState.version + ",channel=" + updateState.channel + ",bereit=1");
@@ -1138,6 +1159,7 @@ void setupWeb() {
     update["failed"] = updateState.failed;
     update["channel"] = updateState.channel;
     update["autoInstall"] = config.updateAutoInstall;
+    update["autoInstallTime"] = updateInstallTimeText();
     update["message"] = updateState.message;
     update["detail"] = updateState.detail;
     update["progress"] = updateState.progress;
@@ -1681,6 +1703,7 @@ void publishUpdateState() {
   doc["failed"] = updateState.failed;
   doc["channel"] = updateState.channel;
   doc["autoInstall"] = config.updateAutoInstall;
+  doc["autoInstallTime"] = updateInstallTimeText();
   doc["message"] = updateState.message;
   doc["detail"] = updateState.detail;
   doc["progress"] = updateState.progress;
@@ -1743,10 +1766,10 @@ void maintainUpdates() {
       if (!downloadAvailableUpdateFiles(error)) {
         updateState.failed = true;
         showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
-      } else if (config.updateAutoInstall) {
+      } else if (updateAutoInstallDue()) {
         updateState.approved = true;
       }
-    } else if (updateState.available && updateState.downloaded && config.updateAutoInstall) {
+    } else if (updateState.available && updateState.downloaded && updateAutoInstallDue()) {
       updateState.approved = true;
     }
     publishUpdateState();
@@ -1757,7 +1780,7 @@ void maintainUpdates() {
     if (!downloadAvailableUpdateFiles(error)) {
       updateState.failed = true;
       showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
-    } else if (config.updateAutoInstall) {
+    } else if (updateAutoInstallDue()) {
       updateState.approved = true;
     }
     publishUpdateState();
