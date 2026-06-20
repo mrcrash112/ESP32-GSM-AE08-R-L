@@ -2,7 +2,6 @@ const $=id=>document.getElementById(id);
 let loadedConfig=null;
 let toastTimer;
 let currentDirectory='/www';
-let detectedImei='';
 
 function notify(message,error=false){const toast=$('toast');toast.textContent=message;toast.className=`toast show${error?' error':''}`;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.className='toast',4500)}
 function value(id){return $(id).value.trim()}
@@ -13,7 +12,6 @@ function setChecked(id,v){$(id).checked=Boolean(v)}
 function radio(name,dhcp){document.querySelector(`input[name="${name}"][value="${dhcp?'dhcp':'static'}"]`).checked=true}
 function isDhcp(name){return document.querySelector(`input[name="${name}"]:checked`).value==='dhcp'}
 function secret(id,stored){const entered=value(id);return entered||(stored==='***'?'***':'')}
-function updateMqttTopic(){const base=value('mqttBaseTopic')||'mione';$('mqttDeviceTopic').value=detectedImei?`${base}/modems/${detectedImei}`:'IMEI nicht verfügbar'}
 
 function refreshVisibility(){
   $('wifiStatic').classList.toggle('hidden',isDhcp('wifiIpMode'));
@@ -32,11 +30,11 @@ function fillForm(c){
   setChecked('ethernetEnabled',c.ethernet.enabled);radio('ethernetIpMode',c.ethernet.ip.dhcp);setValue('ethernetAddress',c.ethernet.ip.address);setValue('ethernetGateway',c.ethernet.ip.gateway);setValue('ethernetSubnet',c.ethernet.ip.subnet);setValue('ethernetDns',c.ethernet.ip.dns);
   setChecked('sdEnabled',c.hardware.sd);setChecked('rtcEnabled',c.hardware.rtc);setChecked('displayEnabled',c.hardware.display);setValue('logIntervalSeconds',c.logging?.intervalSeconds||10);
   setChecked('cellularEnabled',c.cellular.enabled);setValue('apn',c.cellular.apn);setValue('apnUser',c.cellular.user);
-  setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);setValue('mqttBaseTopic',c.mqtt.baseTopic);
+  setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
   setChecked('offlineTcpEnabled',c.offlineTcp.enabled);setValue('offlineTcpHost',c.offlineTcp.host);setValue('offlineTcpPort',c.offlineTcp.port);
   setChecked('alarmProgressEnabled',c.notifications?.alarmProgress!==false);
   setValue('webUser',c.web.user);setChecked('updateCheckEnabled',c.update.checkEnabled);setValue('updateManifestUrl',c.update.manifestUrl);setValue('updateCheckMinutes',c.update.checkMinutes);
-  $('deviceTitle').textContent=c.deviceId;refreshVisibility();updateMqttTopic();
+  $('deviceTitle').textContent=c.deviceId;refreshVisibility();
 }
 
 function ipConfig(prefix,name){return{dhcp:isDhcp(name),address:value(`${prefix}Address`),gateway:value(`${prefix}Gateway`),subnet:value(`${prefix}Subnet`)||'255.255.255.0',dns:value(`${prefix}Dns`)||'1.1.1.1'}}
@@ -47,7 +45,7 @@ function buildConfig(){const c=loadedConfig;return{
   hardware:{sd:checked('sdEnabled'),rtc:checked('rtcEnabled'),display:checked('displayEnabled')},
   logging:{intervalSeconds:number('logIntervalSeconds')},
   cellular:{enabled:checked('cellularEnabled'),simPin:secret('simPin',c.cellular.simPin),apn:value('apn'),user:value('apnUser'),password:secret('apnPassword',c.cellular.password)},
-  mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:value('mqttBaseTopic')},
+  mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:c.mqtt.baseTopic||'mione'},
   offlineTcp:{enabled:checked('offlineTcpEnabled'),host:value('offlineTcpHost'),port:number('offlineTcpPort'),secret:secret('commandSecret',c.offlineTcp.secret)},
   notifications:{alarmProgress:checked('alarmProgressEnabled')},
   web:{user:value('webUser'),password:secret('webPassword',c.web.password)},
@@ -56,7 +54,7 @@ function buildConfig(){const c=loadedConfig;return{
 
 async function api(url,options){const response=await fetch(url,options);let body={};try{body=await response.json()}catch{body={error:`HTTP ${response.status}`}}if(!response.ok)throw new Error(body.error||body.message||`HTTP ${response.status}`);return body}
 function renderMqttConnection(mqtt){const panel=$('mqttConnection');const disabled=mqtt.code===-10;const state=mqtt.connected?'connected':disabled?'disabled':mqtt.code===-1?'waiting':'error';panel.className=`mqtt-connection ${state}`;$('mqttConnectionTitle').textContent=mqtt.connected?'MQTT verbunden':disabled?'MQTT deaktiviert':state==='waiting'?'Verbindung wird vorbereitet':'MQTT nicht verbunden';$('mqttConnectionMessage').textContent=`${mqtt.message||'Kein Status verfügbar'}${mqtt.transport?` über ${mqtt.transport}`:''}`;$('mqttConnectionCode').textContent=mqtt.code>=-4&&mqtt.code<=5?`Code ${mqtt.code}`:'Lokal'}
-async function loadStatus(){try{const s=await api('/api/status');const paths={wifi:'WLAN',ethernet:'Ethernet',cellular:'Mobilfunk',offline:'Offline'};detectedImei=s.modemImei||'';updateMqttTopic();$('connectionState').classList.add('online');$('connectionState').querySelector('span').textContent='Gerät verbunden';$('serialNumber').textContent=s.serialNumber||'–';$('modemImei').textContent=detectedImei||'Nicht verfügbar';$('modemType').value=s.modemModel||'Nicht erkannt';$('wifiStatus').textContent=s.wifiIp||'Nicht verbunden';$('ethernetStatus').textContent=s.ethernetIp||'Nicht verbunden';$('cellularStatus').textContent=s.cellular?'Verbunden':'Nicht verbunden';$('mqttStatus').textContent=s.mqtt?'Verbunden':'Getrennt';renderMqttConnection(s.mqttConnection||{connected:s.mqtt,code:s.mqtt?0:-1,message:s.mqtt?'Verbunden':'Getrennt',transport:''});$('dateTimeStatus').textContent=s.dateTime||'–';$('internetStatus').textContent=paths[s.internet]||s.internet||'–';$('currentFirmware').textContent=s.update.currentVersion;$('updateMessage').textContent=s.update.message||'Noch nicht geprüft';$('approveUpdate').hidden=!s.update.available||s.update.installing}catch(error){$('connectionState').querySelector('span').textContent='Gerät nicht erreichbar';notify(error.message,true)}}
+async function loadStatus(){try{const s=await api('/api/status');const paths={wifi:'WLAN',ethernet:'Ethernet',cellular:'Mobilfunk',offline:'Offline'};$('connectionState').classList.add('online');$('connectionState').querySelector('span').textContent='Gerät verbunden';$('serialNumber').textContent=s.serialNumber||'–';$('modemImei').textContent=s.modemImei||'Nicht verfügbar';$('modemType').value=s.modemModel||'Nicht erkannt';$('wifiStatus').textContent=s.wifiIp||'Nicht verbunden';$('ethernetStatus').textContent=s.ethernetIp||'Nicht verbunden';$('cellularStatus').textContent=s.cellular?'Verbunden':'Nicht verbunden';$('mqttStatus').textContent=s.mqtt?'Verbunden':'Getrennt';renderMqttConnection(s.mqttConnection||{connected:s.mqtt,code:s.mqtt?0:-1,message:s.mqtt?'Verbunden':'Getrennt',transport:''});$('dateTimeStatus').textContent=s.dateTime||'–';$('internetStatus').textContent=paths[s.internet]||s.internet||'–';$('currentFirmware').textContent=s.update.currentVersion;$('updateMessage').textContent=s.update.message||'Noch nicht geprüft';$('approveUpdate').hidden=!s.update.available||s.update.installing}catch(error){$('connectionState').querySelector('span').textContent='Gerät nicht erreichbar';notify(error.message,true)}}
 function secondsAsTime(seconds){seconds=Number(seconds);if(seconds===86400)seconds=0;const h=Math.floor(seconds/3600)%24,m=Math.floor(seconds%3600/60),s=seconds%60;return[h,m,s].map(v=>String(v).padStart(2,'0')).join(':')}
 function renderMioneLive(routing){const heartbeat=routing.heartbeat||{},heartbeatPanel=$('heartbeatStatus');heartbeatPanel.className=`mione-live ${heartbeat.online?'ok':heartbeat.received?'error':'waiting'}`;$('heartbeatTitle').textContent=heartbeat.online?`Aktiv · ${heartbeat.ageSeconds}s`:heartbeat.received?`Gestört · ${heartbeat.ageSeconds}s`:'Kein Signal';$('heartbeatMessage').textContent=`${heartbeat.message||'Noch nicht empfangen'} · ${heartbeat.topic||''}`;const imei=routing.imeiCheck||{},imeiPanel=$('imeiMatchStatus');imeiPanel.className=`mione-live ${imei.matches?'ok':imei.received?'error':'waiting'}`;$('imeiMatchTitle').textContent=imei.matches?'IMEI stimmt überein':imei.received?'IMEI stimmt nicht überein':'Noch keine IMEI empfangen';$('imeiMatchMessage').textContent=`Lokal: ${imei.local||'–'} · MiOne: ${imei.configured||'–'} · ${imei.topic||''}`}
 async function loadAlarmRouting(){try{const routing=await api('/api/alarm-routing');renderMioneLive(routing);$('technicalWindow').textContent=`${secondsAsTime(routing.technicalFrom)} – ${secondsAsTime(routing.technicalUntil)}`;const sync=$('routingSync');sync.className=`routing-sync ${routing.lastReceivedMs?'received':routing.subscriptionReady?'waiting':'error'}`;sync.querySelector('b').textContent=routing.lastReceivedMs?'Mobile-Konfiguration empfangen':routing.subscriptionReady?'Warte auf MiOne-Konfiguration':'Topic nicht abonniert';$('routingSyncMessage').textContent=`${routing.syncMessage||'–'} · ${routing.sourceTopic||''}`;$('mobileSlots').innerHTML=routing.mobileSlots.map(slot=>`<div class="mobile-slot${slot.active?' active':''}"><span class="slot-number">Slot ${slot.slot}<i></i></span><b>${escapeHtml(slot.number||'Nicht belegt')}</b><small>${slot.active?escapeHtml(slot.delivery):'Deaktiviert'}</small></div>`).join('')}catch(error){$('mobileSlots').innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`}}
@@ -67,7 +65,6 @@ function formatBytes(bytes){if(bytes<1024)return`${bytes} B`;if(bytes<1048576)re
 function fileType(name){const extension=name.includes('.')?name.split('.').pop().toUpperCase():'DATEI';return `${extension}-Datei`}
 
 document.querySelectorAll('input[type="radio"],.switch input').forEach(input=>input.addEventListener('change',refreshVisibility));
-$('mqttBaseTopic').addEventListener('input',updateMqttTopic);
 document.querySelectorAll('.reveal').forEach(button=>button.addEventListener('click',()=>{const input=button.previousElementSibling;const visible=input.type==='text';input.type=visible?'password':'text';button.textContent=visible?'Anzeigen':'Verbergen'}));
 document.querySelectorAll('.sidebar a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));link.classList.add('active')}));
 $('configForm').addEventListener('submit',async event=>{event.preventDefault();if(!event.currentTarget.reportValidity())return;const button=$('saveButton');button.disabled=true;button.textContent='Wird gespeichert …';try{await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});notify('Konfiguration gespeichert. Das Gerät startet neu.')}catch(error){notify(error.message,true);button.disabled=false;button.textContent='Konfiguration speichern'}});

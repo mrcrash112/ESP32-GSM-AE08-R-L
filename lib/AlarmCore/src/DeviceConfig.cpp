@@ -134,7 +134,6 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   mqttPort = mqtt["port"] | mqttPort;
   mqttUser = mqtt["user"] | mqttUser;
   if (mqtt["password"].is<const char *>() && mqtt["password"] != "***") mqttPassword = mqtt["password"].as<String>();
-  mqttBaseTopic = mqtt["baseTopic"] | mqttBaseTopic;
 
   JsonObjectConst tcp = root["offlineTcp"];
   offlineTcpEnabled = tcp["enabled"] | offlineTcpEnabled;

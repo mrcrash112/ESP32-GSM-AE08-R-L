@@ -207,8 +207,8 @@ Nach der Ersteinrichtung ist HTTP Basic Auth aktiv. Dateipfade sind auf `/www`,
 Ein Release-Manifest fuer GitHub kann erzeugt werden mit:
 
 ```sh
-python3 scripts/firmware_manifest.py .pio/build/main/firmware.bin 0.1.1 \
-  https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/v0.1.1 \
+python3 scripts/firmware_manifest.py .pio/build/main/firmware.bin 0.1.2 \
+  https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/v0.1.2 \
   --recovery .pio/build/recovery/firmware.bin --recovery-version 0.1.0
 ```
 

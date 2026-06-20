@@ -115,8 +115,6 @@
               <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
               <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
               <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
-              <label><span>Basis-Topic</span><input id="mqttBaseTopic" type="text" maxlength="64" placeholder="mione"></label>
-              <label class="wide"><span>IMEI-gebundenes Geräte-Topic</span><input id="mqttDeviceTopic" type="text" readonly value="Wird nach Modemerkennung angezeigt"><small>Alarm- und App-Konfiguration werden ausschließlich unter diesem IMEI-Pfad angenommen.</small></label>
             </div>
             <div class="alarm-routing">
               <div class="routing-head"><div><h4>Alarmempfänger aus MiOne</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
