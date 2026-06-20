@@ -469,18 +469,26 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   String transport = updateTransportName();
   String logBase = "file=" + label + ",transport=" + transport + ",url=" + url +
                    ",expectedSize=" + String(expectedSize) + ",expectedMd5=" + expectedMd5;
+  String tempPath = String(path) + ".tmp";
   queueSystemLog("UPDATE_DOWNLOAD_START", logBase);
   bool tlsNetworkReady = WiFi.status() == WL_CONNECTED || (ethernetReady && Ethernet.linkStatus() == LinkON);
   if (!tlsNetworkReady) {
     showUpdateStatus(label, "Mobilfunk", progressFrom);
-    if (!modem.downloadToFile(url, path, error)) {
-      SD.remove(path);
+    SD.remove(tempPath.c_str());
+    if (!modem.downloadToFile(url, tempPath.c_str(), error)) {
+      SD.remove(tempPath.c_str());
       queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
       updateStatusCanServeWeb = previousStatusServing;
       return false;
     }
     showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-    bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+    bool verified = verifyDownloadedFile(tempPath.c_str(), expectedMd5, expectedSize, error);
+    if (verified) {
+      SD.remove(path);
+      verified = SD.rename(tempPath.c_str(), path);
+      if (!verified) error = "Download-Datei konnte nicht uebernommen werden";
+    }
+    if (!verified) SD.remove(tempPath.c_str());
     queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
                    logBase + (verified ? ",stored=1" : ",error=" + error));
     updateStatusCanServeWeb = previousStatusServing;
@@ -506,8 +514,8 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     updateStatusCanServeWeb = previousStatusServing;
     return false;
   }
-  SD.remove(path);
-  File target = SD.open(path, FILE_WRITE);
+  SD.remove(tempPath.c_str());
+  File target = SD.open(tempPath.c_str(), FILE_WRITE);
   if (!target) {
     request.end();
     error = "Download-Datei konnte nicht erstellt werden";
@@ -519,7 +527,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   int total = request.getSize();
   size_t written = 0;
   uint32_t lastData = millis();
-  uint8_t buffer[1024];
+  uint8_t buffer[512];
   MD5Builder streamMd5;
   streamMd5.begin();
   showUpdateStatus(label, total > 0 ? "0 / " + String(total / 1024) + " KB" : "Verbindung steht", progressFrom);
@@ -535,6 +543,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
       }
       streamMd5.add(buffer, received);
       written += received;
+      if ((written % 4096) == 0) target.flush();
       lastData = millis();
     } else if (millis() - lastData > 15000) {
       error = "Download-Zeitueberschreitung";
@@ -548,6 +557,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     if (total > 0) amount += " / " + String(total / 1024) + " KB";
     showUpdateStatus(label, amount, overall);
   }
+  target.flush();
   target.close();
   request.end();
   streamMd5.calculate();
@@ -556,7 +566,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     error = "Download-Groesse falsch (Ist " + String(written) + " / Soll " + String(expectedSize) + " Byte)";
   }
   if (!error.isEmpty() || written == 0 || (total > 0 && written != static_cast<size_t>(total))) {
-    SD.remove(path);
+    SD.remove(tempPath.c_str());
     if (error.isEmpty()) error = "Download ist unvollstaendig";
     queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",written=" + String(written) +
                                              ",httpSize=" + String(total) + ",streamMd5=" + streamHash + ",error=" + error);
@@ -564,8 +574,19 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-  bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
-  String storedHash = verified ? expectedMd5 : fileMd5(path);
+  String storedHash = fileMd5(tempPath.c_str());
+  bool verified = storedHash == expectedMd5;
+  if (!verified) {
+    error = "MD5-Pruefung fehlgeschlagen (" + fileCheckDetail(written, expectedSize, storedHash, expectedMd5) + ")";
+    SD.remove(tempPath.c_str());
+  } else {
+    SD.remove(path);
+    verified = SD.rename(tempPath.c_str(), path);
+    if (!verified) {
+      error = "Download-Datei konnte nicht uebernommen werden";
+      SD.remove(tempPath.c_str());
+    }
+  }
   queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
                  logBase + ",written=" + String(written) + ",httpSize=" + String(total) +
                  ",streamMd5=" + streamHash + ",fileMd5=" + storedHash +
