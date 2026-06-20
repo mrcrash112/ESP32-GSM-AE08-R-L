@@ -3,6 +3,7 @@ import hashlib
 import json
 import pathlib
 import argparse
+import io
 import re
 import shutil
 import tarfile
@@ -43,6 +44,8 @@ with tarfile.open(web_path, "w", format=tarfile.USTAR_FORMAT) as archive:
         if source.is_symlink():
             parser.error("www directory must not contain symbolic links")
         relative = source.relative_to(www_dir).as_posix()
+        if relative == "version.json":
+            continue
         info = archive.gettarinfo(str(source), arcname=relative)
         info.uid = 0
         info.gid = 0
@@ -54,6 +57,19 @@ with tarfile.open(web_path, "w", format=tarfile.USTAR_FORMAT) as archive:
                 archive.addfile(info, content)
         else:
             archive.addfile(info)
+    web_version = json.dumps({
+        "product": "NORVI-GSM-AE08-R-L",
+        "version": version,
+        "firmwareVersion": version,
+    }, indent=2).encode("ascii") + b"\n"
+    info = tarfile.TarInfo("version.json")
+    info.size = len(web_version)
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.mtime = 0
+    archive.addfile(info, io.BytesIO(web_version))
 manifest["web"] = {
     "version": version,
     "format": "tar",

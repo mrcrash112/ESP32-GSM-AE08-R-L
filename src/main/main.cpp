@@ -109,6 +109,7 @@ struct UpdateState {
   bool available = false;
   bool firmwareAvailable = false;
   bool recoveryAvailable = false;
+  bool webAvailable = false;
   bool checking = false;
   bool approved = false;
   bool installing = false;
@@ -175,6 +176,27 @@ String installedRecoveryVersion() {
   Preferences prefs;
   prefs.begin("fw-update", true);
   String version = prefs.getString("recoveryVersion", "0.0.0");
+  prefs.end();
+  return version;
+}
+
+String installedWebVersion() {
+  if (sdReady && SD.exists(BuildInfo::webVersionPath)) {
+    File file = SD.open(BuildInfo::webVersionPath, FILE_READ);
+    if (file) {
+      DynamicJsonDocument doc(384);
+      DeserializationError parsed = deserializeJson(doc, file);
+      file.close();
+      if (!parsed) {
+        String version = doc["version"] | doc["firmwareVersion"] | "";
+        version.trim();
+        if (!version.isEmpty()) return version;
+      }
+    }
+  }
+  Preferences prefs;
+  prefs.begin("fw-update", true);
+  String version = prefs.getString("webVersion", "0.0.0");
   prefs.end();
   return version;
 }
@@ -255,13 +277,15 @@ bool checkUpdateManifest(String &error) {
   String webMd5 = webPackage["md5"] | "";
   String webFormat = webPackage["format"] | "";
   webMd5.toLowerCase();
-  if (firmwareAvailable && (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5))) {
+  bool webAvailable = webVersion == version && installedWebVersion() != webVersion;
+  if ((firmwareAvailable || webAvailable) && (webVersion != version || webFormat != "tar" || !githubUrl(webUrl) || !validMd5(webMd5))) {
     error = "Passendes WWW-Paket fehlt oder ist ungueltig";
     return false;
   }
   updateState.firmwareAvailable = firmwareAvailable;
   updateState.recoveryAvailable = recoveryAvailable;
-  updateState.available = firmwareAvailable || recoveryAvailable;
+  updateState.webAvailable = webAvailable;
+  updateState.available = firmwareAvailable || recoveryAvailable || webAvailable;
   updateState.version = version;
   updateState.firmwareUrl = firmwareUrl;
   updateState.firmwareMd5 = firmwareMd5;
@@ -271,9 +295,11 @@ bool checkUpdateManifest(String &error) {
   updateState.webVersion = webVersion;
   updateState.webUrl = webUrl;
   updateState.webMd5 = webMd5;
-  if (firmwareAvailable && recoveryAvailable) updateState.message = "Firmware " + version + " und Recovery " + recoveryVersion + " verfuegbar";
+  if (firmwareAvailable && recoveryAvailable && webAvailable) updateState.message = "Firmware " + version + ", Recovery " + recoveryVersion + " und WWW verfuegbar";
+  else if (firmwareAvailable && recoveryAvailable) updateState.message = "Firmware " + version + " und Recovery " + recoveryVersion + " verfuegbar";
   else if (firmwareAvailable) updateState.message = "Firmware " + version + " verfuegbar";
   else if (recoveryAvailable) updateState.message = "Recovery " + recoveryVersion + " verfuegbar";
+  else if (webAvailable) updateState.message = "Weboberflaeche " + webVersion + " verfuegbar";
   else updateState.message = "Firmware und Recovery sind aktuell";
   return true;
 }
@@ -459,7 +485,8 @@ bool stageWebPackage(String &error) {
   }
   archive.close();
   if (!error.isEmpty() || files == 0 || !SD.exists("/www-new/index.html") ||
-      !SD.exists("/www-new/config.css") || !SD.exists("/www-new/config.js")) {
+      !SD.exists("/www-new/config.css") || !SD.exists("/www-new/config.js") ||
+      !SD.exists("/www-new/version.json")) {
     removeSdTree("/www-new");
     if (error.isEmpty()) error = "WWW-Paket enthaelt nicht alle Pflichtdateien";
     return false;
@@ -520,6 +547,20 @@ bool rollbackStagedWeb() {
     prefs.end();
   }
   return restored;
+}
+
+bool commitActivatedWeb(String &error) {
+  if (!removeSdTree("/www-old")) { error = "Altes WWW-Backup konnte nicht entfernt werden"; return false; }
+  removeSdTree("/www-new");
+  SD.remove(BuildInfo::webPackagePath);
+  Preferences prefs;
+  if (prefs.begin("fw-update", false)) {
+    prefs.putBool("webPending", false);
+    prefs.remove("webStage");
+    prefs.remove("webHadPrevious");
+    prefs.end();
+  }
+  return true;
 }
 
 void recoverInterruptedWebUpdate() {
@@ -604,7 +645,7 @@ bool prepareApprovedUpdate(String &error) {
                       "Recovery laden", 5, 18, error) ||
         !installRecovery(updateState.recoveryMd5, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
-  if (!updateState.firmwareAvailable) {
+  if (!updateState.firmwareAvailable && !updateState.webAvailable) {
     updateState.installing = false;
     updateState.recoveryAvailable = false;
     updateState.available = false;
@@ -613,25 +654,54 @@ bool prepareApprovedUpdate(String &error) {
     queueSystemLog("UPDATE_RECOVERY", "version=" + updateState.recoveryVersion + ",bereit=0");
     return true;
   }
-  updateState.message = "Hauptfirmware wird geladen";
-  if (!downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
-                    "Firmware laden", 30, 55, error)) { updateState.installing = false; updateState.message = error; return false; }
-  updateState.message = "Weboberflaeche wird geladen";
-  if (!downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
-                    "Webseite laden", 56, 70, error)) {
-    SD.remove(BuildInfo::firmwarePath);
-    updateState.installing = false;
-    updateState.message = error;
-    return false;
+  if (updateState.firmwareAvailable) {
+    updateState.message = "Hauptfirmware wird geladen";
+    if (!downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+                      "Firmware laden", 30, 55, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
-  updateState.message = "Weboberflaeche wird vorbereitet";
-  showUpdateStatus("Webdateien", "Staging wird vorbereitet", 71);
-  if (!stageWebPackage(error)) {
-    SD.remove(BuildInfo::firmwarePath);
-    SD.remove(BuildInfo::webPackagePath);
+  if (updateState.firmwareAvailable || updateState.webAvailable) {
+    updateState.message = "Weboberflaeche wird geladen";
+    if (!downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+                      "Webseite laden", 56, 70, error)) {
+      SD.remove(BuildInfo::firmwarePath);
+      updateState.installing = false;
+      updateState.message = error;
+      return false;
+    }
+    updateState.message = "Weboberflaeche wird vorbereitet";
+    showUpdateStatus("Webdateien", "Staging wird vorbereitet", 71);
+    if (!stageWebPackage(error)) {
+      SD.remove(BuildInfo::firmwarePath);
+      SD.remove(BuildInfo::webPackagePath);
+      updateState.installing = false;
+      updateState.message = error;
+      return false;
+    }
+    updateState.message = "Weboberflaeche wird aktiviert";
+    showUpdateStatus("Webdateien", "Neue Version aktivieren", 84);
+    if (!activateStagedWeb(error)) {
+      SD.remove(BuildInfo::firmwarePath);
+      SD.remove(BuildInfo::webPackagePath);
+      updateState.installing = false;
+      updateState.message = error;
+      return false;
+    }
+  }
+  if (!updateState.firmwareAvailable) {
+    if (!commitActivatedWeb(error)) {
+      rollbackStagedWeb();
+      updateState.installing = false;
+      updateState.message = error;
+      return false;
+    }
     updateState.installing = false;
-    updateState.message = error;
-    return false;
+    updateState.available = false;
+    updateState.webAvailable = false;
+    updateState.recoveryAvailable = false;
+    updateState.message = "Weboberflaeche " + updateState.webVersion + " installiert";
+    showUpdateStatus("Webdateien fertig", "Version " + updateState.webVersion, 100);
+    queueSystemLog("UPDATE_WWW", "webVersion=" + updateState.webVersion + ",bereit=0");
+    return true;
   }
   const esp_partition_t *factory = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
   if (!factory) {
@@ -640,15 +710,6 @@ bool prepareApprovedUpdate(String &error) {
     SD.remove(BuildInfo::webPackagePath);
     updateState.installing = false;
     error = "Recovery-Partition wurde nicht gefunden";
-    updateState.message = error;
-    return false;
-  }
-  updateState.message = "Weboberflaeche wird aktiviert";
-  showUpdateStatus("Webdateien", "Neue Version aktivieren", 84);
-  if (!activateStagedWeb(error)) {
-    SD.remove(BuildInfo::firmwarePath);
-    SD.remove(BuildInfo::webPackagePath);
-    updateState.installing = false;
     updateState.message = error;
     return false;
   }
@@ -994,12 +1055,15 @@ void setupWeb() {
                       modem.packetDataConnected() ? "cellular" : "offline";
     JsonObject update = doc.createNestedObject("update");
     update["currentVersion"] = BuildInfo::version;
+    update["currentWebVersion"] = installedWebVersion();
     update["recoveryVersion"] = installedRecoveryVersion();
     update["available"] = updateState.available;
     update["firmwareAvailable"] = updateState.firmwareAvailable;
     update["recoveryAvailable"] = updateState.recoveryAvailable;
+    update["webAvailable"] = updateState.webAvailable;
     update["version"] = updateState.version;
     update["recoveryTargetVersion"] = updateState.recoveryVersion;
+    update["webTargetVersion"] = updateState.webVersion;
     update["checking"] = updateState.checking;
     update["approved"] = updateState.approved;
     update["installing"] = updateState.installing;
@@ -1531,12 +1595,15 @@ void publishUpdateState() {
   if (!mqtt.connected()) return;
   DynamicJsonDocument doc(768);
   doc["currentVersion"] = BuildInfo::version;
+  doc["currentWebVersion"] = installedWebVersion();
   doc["currentRecoveryVersion"] = installedRecoveryVersion();
   doc["available"] = updateState.available;
   doc["firmwareAvailable"] = updateState.firmwareAvailable;
   doc["recoveryAvailable"] = updateState.recoveryAvailable;
+  doc["webAvailable"] = updateState.webAvailable;
   doc["version"] = updateState.version;
   doc["recoveryTargetVersion"] = updateState.recoveryVersion;
+  doc["webTargetVersion"] = updateState.webVersion;
   doc["approved"] = updateState.approved;
   doc["installing"] = updateState.installing;
   doc["failed"] = updateState.failed;
