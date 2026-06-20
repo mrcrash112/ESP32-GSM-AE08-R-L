@@ -1431,6 +1431,10 @@ void setupWeb() {
   web.on("/api/firmware/approve", HTTP_POST, [] {
     if (!authorized()) return;
     if (!updateState.available || updateState.installing) return errorResponse(409, "Kein freigegebenes Update verfuegbar");
+    if (updateState.checking || updateState.downloadQueued || updateState.downloading || !updateState.downloaded ||
+        updateState.failed || updateState.manualCheckRequired) {
+      return errorResponse(409, "Update-Dateien sind noch nicht erfolgreich geladen und geprueft");
+    }
     updateState.approved = true;
     web.send(202, "application/json", "{\"ok\":true,\"approved\":true}");
   });
