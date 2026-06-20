@@ -25,7 +25,7 @@ void showStatus(const String &step, const String &detail, uint8_t progress, bool
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.print("MIONE RECOVERY");
+  display.print("Alarmmodem V2");
   display.setCursor(92, 0);
   display.printf("%3u%%", progress);
   display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
