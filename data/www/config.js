@@ -91,7 +91,6 @@ function refreshVisibility(){
   $('ethernetStatic').classList.toggle('hidden',isDhcp('ethernetIpMode'));
   document.querySelector('[data-feature="wifi"]').dataset.disabled=!checked('wifiEnabled');
   document.querySelector('[data-feature="ethernet"]').dataset.disabled=!checked('ethernetEnabled');
-  document.querySelector('[data-feature="cellular"]').dataset.disabled=!checked('cellularEnabled');
   document.querySelector('[data-feature="mqtt"]').dataset.disabled=!checked('mqttEnabled');
   document.querySelector('[data-feature="offlineTcp"]').dataset.disabled=!checked('offlineTcpEnabled');
 }
@@ -102,7 +101,7 @@ function fillForm(c){
   radio('wifiIpMode',c.wifi.ip.dhcp);setValue('wifiAddress',c.wifi.ip.address);setValue('wifiGateway',c.wifi.ip.gateway);setValue('wifiSubnet',c.wifi.ip.subnet);setValue('wifiDns',c.wifi.ip.dns);
   setChecked('ethernetEnabled',c.ethernet.enabled);radio('ethernetIpMode',c.ethernet.ip.dhcp);setValue('ethernetAddress',c.ethernet.ip.address);setValue('ethernetGateway',c.ethernet.ip.gateway);setValue('ethernetSubnet',c.ethernet.ip.subnet);setValue('ethernetDns',c.ethernet.ip.dns);
   setChecked('sdEnabled',c.hardware.sd);setChecked('rtcEnabled',c.hardware.rtc);setChecked('displayEnabled',c.hardware.display);setValue('logIntervalSeconds',c.logging?.intervalSeconds||10);
-  setChecked('cellularEnabled',c.cellular.enabled);setValue('apn',c.cellular.apn);setValue('apnUser',c.cellular.user);
+  setValue('apn',c.cellular.apn);setValue('apnUser',c.cellular.user);
   setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
   setChecked('offlineTcpEnabled',c.offlineTcp.enabled);setValue('offlineTcpHost',c.offlineTcp.host);setValue('offlineTcpPort',c.offlineTcp.port);
   setChecked('alarmProgressEnabled',c.notifications?.alarmProgress!==false);
@@ -120,7 +119,7 @@ function buildConfig(){const c=loadedConfig;return{
   ethernet:{enabled:checked('ethernetEnabled'),ip:ipConfig('ethernet','ethernetIpMode')},
   hardware:{sd:checked('sdEnabled'),rtc:checked('rtcEnabled'),display:checked('displayEnabled')},
   logging:{intervalSeconds:number('logIntervalSeconds')},
-  cellular:{enabled:checked('cellularEnabled'),simPin:secret('simPin',c.cellular.simPin),apn:value('apn'),user:value('apnUser'),password:secret('apnPassword',c.cellular.password)},
+  cellular:{enabled:true,simPin:secret('simPin',c.cellular.simPin),apn:value('apn'),user:value('apnUser'),password:secret('apnPassword',c.cellular.password)},
   mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:c.mqtt.baseTopic||'mione'},
   offlineTcp:{enabled:checked('offlineTcpEnabled'),host:value('offlineTcpHost'),port:number('offlineTcpPort'),secret:secret('commandSecret',c.offlineTcp.secret)},
   notifications:{alarmProgress:checked('alarmProgressEnabled')},

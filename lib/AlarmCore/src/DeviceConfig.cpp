@@ -161,7 +161,7 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   logIntervalSeconds = logging["intervalSeconds"] | logIntervalSeconds;
 
   JsonObjectConst cellular = root["cellular"];
-  cellularEnabled = cellular["enabled"] | cellularEnabled;
+  cellularEnabled = true;
   if (cellular["simPin"].is<const char *>() && cellular["simPin"] != "***") simPin = cellular["simPin"].as<String>();
   apn = cellular["apn"] | apn;
   apnUser = cellular["user"] | apnUser;

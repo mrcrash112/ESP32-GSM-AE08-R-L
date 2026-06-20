@@ -41,7 +41,7 @@ struct DeviceConfig {
   bool rtcEnabled = false;
   bool displayEnabled = false;
   uint16_t logIntervalSeconds = 10;
-  bool cellularEnabled = false;
+  bool cellularEnabled = true;
   String simPin;
   String apn;
   String apnUser;

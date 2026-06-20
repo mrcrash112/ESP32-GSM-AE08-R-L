@@ -84,6 +84,8 @@ bool mioneHeartbeatValue = false;
 String mioneHeartbeatImei;
 String mioneHeartbeatTimestamp;
 String mioneHeartbeatMessage = "Noch kein Heartbeat empfangen";
+uint32_t heartbeatMonitorStartedAt = 0;
+bool heartbeatAlarmActive = false;
 uint32_t mioneImeiReceivedAt = 0;
 String mioneConfiguredImei;
 uint32_t lastDisplay = 0;
@@ -122,6 +124,7 @@ constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
+constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -1873,9 +1876,50 @@ bool recordMioneHeartbeat(const String &imei, bool value, const String &timestam
   mioneHeartbeatTimestamp = timestamp;
   mioneHeartbeatReceivedAt = millis();
   bool ok = !modem.imei().isEmpty() && imei == modem.imei();
+  if (ok && value) {
+    heartbeatAlarmActive = false;
+    heartbeatMonitorStartedAt = millis();
+  }
   result = ok ? "Heartbeat empfangen" : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
   mioneHeartbeatMessage = result + " (" + source + ")";
   return ok;
+}
+
+bool validMioneHeartbeat() {
+  if (!mioneHeartbeatReceivedAt || !mioneHeartbeatValue) return false;
+  if (modem.imei().isEmpty() || mioneHeartbeatImei != modem.imei()) return false;
+  return millis() - mioneHeartbeatReceivedAt <= kHeartbeatAlarmMs;
+}
+
+void sendHeartbeatAlarm() {
+  if (modem.imei().isEmpty()) return;
+  DynamicJsonDocument doc(768);
+  doc["modemImei"] = modem.imei();
+  doc["imei"] = modem.imei();
+  doc["active"] = true;
+  doc["alarmCode"] = "MIONE_HEARTBEAT";
+  doc["id"] = "MIONE_HEARTBEAT";
+  doc["revision"] = String(millis() / 60000UL);
+  doc["priority"] = "urgent";
+  doc["message"] = "MiOne Heartbeat seit 15 Minuten ausgefallen";
+  String result;
+  DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
+  uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
+  bool ok = alarmRouter.processAlarmPayload(doc.as<JsonObjectConst>(), modem.imei(), config.commandSecret, secondsOfDay, result);
+  queueSystemLog(ok ? "HEARTBEAT_ALARM" : "HEARTBEAT_ALARM_ERROR", result);
+}
+
+void maintainHeartbeatAlarm() {
+  if (!config.mqttEnabled || !mqttConnectedAny()) {
+    heartbeatMonitorStartedAt = 0;
+    heartbeatAlarmActive = false;
+    return;
+  }
+  if (validMioneHeartbeat()) return;
+  if (!heartbeatMonitorStartedAt) heartbeatMonitorStartedAt = millis();
+  if (heartbeatAlarmActive || millis() - heartbeatMonitorStartedAt < kHeartbeatAlarmMs) return;
+  heartbeatAlarmActive = true;
+  sendHeartbeatAlarm();
 }
 
 void onMqtt(char *topic, byte *payload, unsigned int length) {
@@ -2797,11 +2841,10 @@ void setup() {
   if (rtcReady && rtc.lostPower()) rtc.adjust(DateTime(__DATE__, __TIME__));
   showBootStatus("Echtzeituhr", 70, rtcReady ? "bereit" : "FEHLER");
 
-  showBootStatus("Mobilfunkmodem", 76, config.cellularEnabled ? "wird erkannt" : "deaktiviert");
+  showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
   showBootStatus("Mobilfunkmodem", 82,
-                 !config.cellularEnabled ? "deaktiviert" :
-                 (!modem.model().isEmpty() ? modem.model() + " erkannt" : "nicht erkannt"));
+                 !modem.model().isEmpty() ? modem.model() + " erkannt" : "nicht erkannt");
 
   showBootStatus("Alarmsteuerung", 87, "Daten laden");
   alarmRouter.setProgressCallback(showAlarmProgress);
@@ -2838,6 +2881,7 @@ void loop() {
                         (ethernetReady && Ethernet.linkStatus() == LinkON);
   modem.maintainDataFallback(!primaryNetwork && millis() > 30000);
   maintainMqtt();
+  maintainHeartbeatAlarm();
   publishMioneStatus();
   maintainButtons();
   maintainUpdates();
