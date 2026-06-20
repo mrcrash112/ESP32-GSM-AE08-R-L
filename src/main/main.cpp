@@ -111,6 +111,7 @@ bool updateStatusCanServeWeb = false;
 constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 65536;
 constexpr uint16_t kLogMaxResponseLines = 500;
+constexpr uint32_t kSdSpiFrequency = 10000000;
 
 void queueSystemLog(const String &event, const String &details);
 
@@ -457,17 +458,28 @@ String fileCheckDetail(size_t actualSize, size_t expectedSize, const String &act
 }
 
 String fileMd5(const char *path) {
+  digitalWrite(BoardPins::ethernetCs, HIGH);
   File check = SD.open(path, FILE_READ);
   if (!check) return "";
   MD5Builder md5;
   md5.begin();
-  md5.addStream(check, check.size());
+  uint8_t buffer[1024];
+  while (check.available()) {
+    size_t count = check.read(buffer, sizeof(buffer));
+    if (count == 0) {
+      check.close();
+      return "";
+    }
+    md5.add(buffer, count);
+    delay(0);
+  }
   md5.calculate();
   check.close();
   return md5.toString();
 }
 
 bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t expectedSize, String &error) {
+  digitalWrite(BoardPins::ethernetCs, HIGH);
   File check = SD.open(path, FILE_READ);
   if (!check) { error = "Download-Datei fehlt"; return false; }
   size_t actualSize = check.size();
@@ -479,7 +491,18 @@ bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t ex
   }
   MD5Builder md5;
   md5.begin();
-  md5.addStream(check, actualSize);
+  uint8_t buffer[1024];
+  while (check.available()) {
+    size_t count = check.read(buffer, sizeof(buffer));
+    if (count == 0) {
+      check.close();
+      SD.remove(path);
+      error = "Download-Datei konnte nicht gelesen werden";
+      return false;
+    }
+    md5.add(buffer, count);
+    delay(0);
+  }
   md5.calculate();
   check.close();
   String actualMd5 = md5.toString();
@@ -1329,7 +1352,7 @@ void beginSharedSpi() {
 
 void beginSd() {
   if (!config.sdEnabled) return;
-  sdReady = SD.begin(BoardPins::sdCs, SPI, 4000000);
+  sdReady = SD.begin(BoardPins::sdCs, SPI, kSdSpiFrequency);
   if (sdReady) {
     SD.mkdir("/www");
     SD.mkdir("/firmware");
