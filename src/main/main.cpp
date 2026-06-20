@@ -1253,7 +1253,15 @@ void setupWeb() {
       item.close();
     }
     root.close();
-    web.sendContent("]}");
+    uint64_t total = SD.totalBytes();
+    uint64_t used = SD.usedBytes();
+    web.sendContent("],\"storage\":{\"total\":");
+    web.sendContent(String(static_cast<unsigned long long>(total)));
+    web.sendContent(",\"used\":");
+    web.sendContent(String(static_cast<unsigned long long>(used)));
+    web.sendContent(",\"free\":");
+    web.sendContent(String(static_cast<unsigned long long>(total > used ? total - used : 0)));
+    web.sendContent("}}");
     web.sendContent("");
   });
   web.on("/api/logs", HTTP_GET, [] {
