@@ -113,8 +113,11 @@ struct UpdateState {
   bool checking = false;
   bool approved = false;
   bool installing = false;
+  bool downloading = false;
   bool failed = false;
+  bool downloaded = false;
   String version;
+  String channel;
   String firmwareUrl;
   String firmwareMd5;
   String recoveryVersion;
@@ -130,6 +133,7 @@ struct UpdateState {
 
 void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
 bool updateNetworkReady();
+bool downloadedFileReady(const char *path, const String &expectedMd5);
 
 String chipId() {
   uint64_t mac = ESP.getEfuseMac();
@@ -215,6 +219,7 @@ bool checkUpdateManifest(String &error) {
   if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
   updateState.checking = true;
+  updateState.failed = false;
   updateState.message = "Pruefe GitHub";
   showUpdateStatus("Manifest pruefen", "GitHub wird kontaktiert", 2);
   DynamicJsonDocument manifest(3072);
@@ -257,6 +262,8 @@ bool checkUpdateManifest(String &error) {
     return false;
   }
   if (manifest["product"].as<String>() != BuildInfo::product) { error = "Manifest gehoert zu einem anderen Produkt"; return false; }
+  String channel = manifest["channel"] | "stable";
+  if (channel != config.updateChannel) { error = "Manifest gehoert zum Firmware-Kanal " + channel; return false; }
   String version = manifest["version"] | "";
   JsonObjectConst firmware = manifest["firmware"];
   String firmwareUrl = firmware["url"] | manifest["url"] | "";
@@ -287,6 +294,7 @@ bool checkUpdateManifest(String &error) {
   updateState.webAvailable = webAvailable;
   updateState.available = firmwareAvailable || recoveryAvailable || webAvailable;
   updateState.version = version;
+  updateState.channel = channel;
   updateState.firmwareUrl = firmwareUrl;
   updateState.firmwareMd5 = firmwareMd5;
   updateState.recoveryVersion = recoveryVersion;
@@ -295,6 +303,10 @@ bool checkUpdateManifest(String &error) {
   updateState.webVersion = webVersion;
   updateState.webUrl = webUrl;
   updateState.webMd5 = webMd5;
+  updateState.downloaded =
+      (!recoveryAvailable || downloadedFileReady(BuildInfo::recoveryPath, recoveryMd5)) &&
+      (!firmwareAvailable || downloadedFileReady(BuildInfo::firmwarePath, firmwareMd5)) &&
+      (!webAvailable || downloadedFileReady(BuildInfo::webPackagePath, webMd5));
   if (firmwareAvailable && recoveryAvailable && webAvailable) updateState.message = "Firmware " + version + ", Recovery " + recoveryVersion + " und WWW verfuegbar";
   else if (firmwareAvailable && recoveryAvailable) updateState.message = "Firmware " + version + " und Recovery " + recoveryVersion + " verfuegbar";
   else if (firmwareAvailable) updateState.message = "Firmware " + version + " verfuegbar";
@@ -314,6 +326,12 @@ bool verifyDownloadedFile(const char *path, const String &expectedMd5, String &e
   check.close();
   if (md5.toString() != expectedMd5) { SD.remove(path); error = "MD5-Pruefung fehlgeschlagen"; return false; }
   return true;
+}
+
+bool downloadedFileReady(const char *path, const String &expectedMd5) {
+  if (!sdReady || !validMd5(expectedMd5) || !SD.exists(path)) return false;
+  String error;
+  return verifyDownloadedFile(path, expectedMd5, error);
 }
 
 bool downloadToSd(const String &url, const char *path, const String &expectedMd5,
@@ -632,6 +650,47 @@ bool installRecovery(const String &expectedMd5, String &error) {
   return true;
 }
 
+bool downloadAvailableUpdateFiles(String &error) {
+  if (!updateState.available) { error = "Kein Update verfuegbar"; return false; }
+  if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
+  if (!updateNetworkReady()) { error = "Download benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
+  updateState.downloading = true;
+  updateState.downloaded = false;
+  updateState.message = "Update-Dateien werden geladen";
+  if (updateState.recoveryAvailable &&
+      !downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5) &&
+      !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
+                    "Recovery laden", 5, 22, error)) {
+    updateState.downloading = false;
+    updateState.message = error;
+    return false;
+  }
+  if (updateState.firmwareAvailable &&
+      !downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5) &&
+      !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+                    "Firmware laden", 30, 58, error)) {
+    updateState.downloading = false;
+    updateState.message = error;
+    return false;
+  }
+  if ((updateState.firmwareAvailable || updateState.webAvailable) &&
+      !downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5) &&
+      !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+                    "Webseite laden", 60, 82, error)) {
+    SD.remove(BuildInfo::firmwarePath);
+    updateState.downloading = false;
+    updateState.message = error;
+    return false;
+  }
+  updateState.downloading = false;
+  updateState.downloaded = true;
+  updateState.message = config.updateAutoInstall ? "Update-Dateien geladen, Installation startet" :
+                                                   "Update-Dateien geladen, Freigabe erforderlich";
+  showUpdateStatus("Download fertig", updateState.version, 82);
+  queueSystemLog("UPDATE_DOWNLOAD", "version=" + updateState.version + ",channel=" + updateState.channel + ",bereit=1");
+  return true;
+}
+
 bool prepareApprovedUpdate(String &error) {
   if (!updateState.available) { error = "Kein Update freigegeben"; return false; }
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
@@ -639,10 +698,15 @@ bool prepareApprovedUpdate(String &error) {
   updateState.installing = true;
   updateState.message = "Update wird geladen";
   showUpdateStatus("Update vorbereiten", "Version " + updateState.version, 4);
+  if (!downloadAvailableUpdateFiles(error)) {
+    updateState.installing = false;
+    return false;
+  }
   if (updateState.recoveryAvailable) {
     updateState.message = "Recovery wird aktualisiert";
-    if (!downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
-                      "Recovery laden", 5, 18, error) ||
+    if ((!downloadedFileReady(BuildInfo::recoveryPath, updateState.recoveryMd5) &&
+         !downloadToSd(updateState.recoveryUrl, BuildInfo::recoveryPath, updateState.recoveryMd5,
+                       "Recovery laden", 5, 18, error)) ||
         !installRecovery(updateState.recoveryMd5, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
   if (!updateState.firmwareAvailable && !updateState.webAvailable) {
@@ -656,12 +720,14 @@ bool prepareApprovedUpdate(String &error) {
   }
   if (updateState.firmwareAvailable) {
     updateState.message = "Hauptfirmware wird geladen";
-    if (!downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
+    if (!downloadedFileReady(BuildInfo::firmwarePath, updateState.firmwareMd5) &&
+        !downloadToSd(updateState.firmwareUrl, BuildInfo::firmwarePath, updateState.firmwareMd5,
                       "Firmware laden", 30, 55, error)) { updateState.installing = false; updateState.message = error; return false; }
   }
   if (updateState.firmwareAvailable || updateState.webAvailable) {
     updateState.message = "Weboberflaeche wird geladen";
-    if (!downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
+    if (!downloadedFileReady(BuildInfo::webPackagePath, updateState.webMd5) &&
+        !downloadToSd(updateState.webUrl, BuildInfo::webPackagePath, updateState.webMd5,
                       "Webseite laden", 56, 70, error)) {
       SD.remove(BuildInfo::firmwarePath);
       updateState.installing = false;
@@ -1067,7 +1133,11 @@ void setupWeb() {
     update["checking"] = updateState.checking;
     update["approved"] = updateState.approved;
     update["installing"] = updateState.installing;
+    update["downloading"] = updateState.downloading;
+    update["downloaded"] = updateState.downloaded;
     update["failed"] = updateState.failed;
+    update["channel"] = updateState.channel;
+    update["autoInstall"] = config.updateAutoInstall;
     update["message"] = updateState.message;
     update["detail"] = updateState.detail;
     update["progress"] = updateState.progress;
@@ -1606,7 +1676,11 @@ void publishUpdateState() {
   doc["webTargetVersion"] = updateState.webVersion;
   doc["approved"] = updateState.approved;
   doc["installing"] = updateState.installing;
+  doc["downloading"] = updateState.downloading;
+  doc["downloaded"] = updateState.downloaded;
   doc["failed"] = updateState.failed;
+  doc["channel"] = updateState.channel;
+  doc["autoInstall"] = config.updateAutoInstall;
   doc["message"] = updateState.message;
   doc["detail"] = updateState.detail;
   doc["progress"] = updateState.progress;
@@ -1657,7 +1731,7 @@ void maintainUpdates() {
     publishUpdateState();
     return;
   }
-  if (updateState.installing || config.updateManifestUrl.isEmpty()) return;
+  if (updateState.installing || updateState.downloading || config.updateManifestUrl.isEmpty()) return;
   uint32_t interval = static_cast<uint32_t>(config.updateCheckMinutes) * 60000UL;
   bool periodic = config.updateCheckEnabled && millis() > 30000 && (lastUpdateCheck == 0 || millis() - lastUpdateCheck >= interval);
   if (updateCheckRequested || periodic) {
@@ -1665,7 +1739,29 @@ void maintainUpdates() {
     lastUpdateCheck = millis();
     String error;
     if (!checkUpdateManifest(error)) updateState.message = error;
+    else if (updateState.available && !updateState.downloaded) {
+      if (!downloadAvailableUpdateFiles(error)) {
+        updateState.failed = true;
+        showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
+      } else if (config.updateAutoInstall) {
+        updateState.approved = true;
+      }
+    } else if (updateState.available && updateState.downloaded && config.updateAutoInstall) {
+      updateState.approved = true;
+    }
     publishUpdateState();
+    return;
+  }
+  if (updateState.available && !updateState.downloaded && !updateState.failed) {
+    String error;
+    if (!downloadAvailableUpdateFiles(error)) {
+      updateState.failed = true;
+      showUpdateStatus("DOWNLOAD FEHLER", error, updateState.progress);
+    } else if (config.updateAutoInstall) {
+      updateState.approved = true;
+    }
+    publishUpdateState();
+    return;
   }
   int buttonValue = currentButtonAdc;
   if (upDownButtonsPressed(buttonValue)) {
@@ -1972,7 +2068,8 @@ void updateDisplay() {
   if (updateState.available) {
     String target = updateState.firmwareAvailable && updateState.recoveryAvailable ? "FW " + updateState.version + " REC " + updateState.recoveryVersion :
                     updateState.firmwareAvailable ? "Firmware " + updateState.version :
-                    "Recovery " + updateState.recoveryVersion;
+                    updateState.recoveryAvailable ? "Recovery " + updateState.recoveryVersion :
+                    "WWW " + updateState.webVersion;
     display.setCursor(0, 13);
     display.printf("UPDATE VERFUEGBAR\n%s\nTaste 2s halten\nWeb / MQTT", target.c_str());
     display.display();

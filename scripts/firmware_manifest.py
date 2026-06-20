@@ -14,6 +14,7 @@ parser.add_argument("version")
 parser.add_argument("base_url")
 parser.add_argument("--recovery", type=pathlib.Path)
 parser.add_argument("--recovery-version")
+parser.add_argument("--channel", choices=("stable", "beta"), default="stable")
 parser.add_argument("--www-dir", type=pathlib.Path, default=pathlib.Path("data/www"))
 args = parser.parse_args()
 
@@ -27,6 +28,7 @@ main_asset = f"mione-main-{version}.bin"
 shutil.copyfile(firmware, firmware.parent / main_asset)
 manifest = {
     "product": "NORVI-GSM-AE08-R-L",
+    "channel": args.channel,
     "version": version,
     "firmware": {
         "url": f"{base_url}/{main_asset}",
@@ -59,6 +61,7 @@ with tarfile.open(web_path, "w", format=tarfile.USTAR_FORMAT) as archive:
             archive.addfile(info)
     web_version = json.dumps({
         "product": "NORVI-GSM-AE08-R-L",
+        "channel": args.channel,
         "version": version,
         "firmwareVersion": version,
     }, indent=2).encode("ascii") + b"\n"

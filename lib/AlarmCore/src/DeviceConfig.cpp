@@ -95,6 +95,8 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   JsonObject update = root.createNestedObject("update");
   update["checkEnabled"] = updateCheckEnabled;
   update["cellularDownloads"] = updateCellularDownloads;
+  update["autoInstall"] = updateAutoInstall;
+  update["channel"] = updateChannel;
   update["manifestUrl"] = updateManifestUrl;
   update["checkMinutes"] = updateCheckMinutes;
 }
@@ -152,6 +154,8 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   JsonObjectConst update = root["update"];
   updateCheckEnabled = update["checkEnabled"] | updateCheckEnabled;
   updateCellularDownloads = update["cellularDownloads"] | updateCellularDownloads;
+  updateAutoInstall = update["autoInstall"] | updateAutoInstall;
+  updateChannel = update["channel"] | updateChannel;
   updateManifestUrl = update["manifestUrl"] | updateManifestUrl;
   updateCheckMinutes = update["checkMinutes"] | updateCheckMinutes;
   return validate(error);
@@ -169,6 +173,7 @@ bool DeviceConfig::validate(String &error) const {
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";
   else if (webUser.isEmpty() || webPassword.length() < 8) error = "Web-Zugang benoetigt ein Passwort mit mindestens 8 Zeichen";
   else if (commandSecret.length() < 8) error = "Befehls-Secret muss mindestens 8 Zeichen lang sein";
+  else if (updateChannel != "stable" && updateChannel != "beta") error = "Firmware-Kanal muss stable oder beta sein";
   else if (updateCheckEnabled && !updateManifestUrl.isEmpty() && !updateManifestUrl.startsWith("https://github.com/") && !updateManifestUrl.startsWith("https://raw.githubusercontent.com/")) error = "Update-Manifest muss von GitHub per HTTPS geladen werden";
   else if (updateCheckMinutes < 5) error = "Update-Pruefintervall muss mindestens 5 Minuten betragen";
   else return true;

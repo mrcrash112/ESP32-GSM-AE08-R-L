@@ -52,6 +52,8 @@ struct DeviceConfig {
 
   bool updateCheckEnabled = true;
   bool updateCellularDownloads = false;
+  bool updateAutoInstall = false;
+  String updateChannel = "stable";
   String updateManifestUrl;
   uint16_t updateCheckMinutes = 360;
 
