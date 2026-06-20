@@ -20,6 +20,36 @@ function isDhcp(name){return document.querySelector(`input[name="${name}"]:check
 function secret(id,stored){const entered=value(id);return entered||(stored==='***'?'***':'')}
 function updateManifestForChannel(){const current=value('updateManifestUrl'),channel=value('updateChannel');if(current&&current!==stableManifestUrl&&current!==betaManifestUrl)return;setValue('updateManifestUrl',channel==='beta'?betaManifestUrl:stableManifestUrl);updateSaveBar()}
 
+function setSectionOpen(section,open){
+  section.classList.toggle('collapsed',!open);
+  const button=section.querySelector(':scope>.section-heading .section-toggle');
+  if(button){button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'Sektion einklappen':'Sektion ausklappen')}
+}
+
+function openSection(id){
+  const section=$(id);
+  if(section?.classList.contains('collapsible'))setSectionOpen(section,true);
+}
+
+function setupCollapsibleSections(){
+  document.querySelectorAll('#configForm>.card').forEach((section,index)=>{
+    const heading=section.querySelector(':scope>.section-heading');
+    if(!heading)return;
+    const body=document.createElement('div');
+    body.className='section-body';
+    while(heading.nextSibling)body.appendChild(heading.nextSibling);
+    section.appendChild(body);
+    section.classList.add('collapsible');
+    const button=document.createElement('button');
+    button.type='button';
+    button.className='section-toggle';
+    button.innerHTML='<span></span>';
+    button.addEventListener('click',()=>setSectionOpen(section,section.classList.contains('collapsed')));
+    heading.appendChild(button);
+    setSectionOpen(section,index===0);
+  });
+}
+
 function buildAlarmInputUi(){
   const container=$('alarmInputs');
   const delayOptions=[[0,'Sofort'],[300,'5 Min'],[600,'10 Min'],[900,'15 Min']];
@@ -120,12 +150,13 @@ function escapeHtml(text){const div=document.createElement('div');div.textConten
 function formatBytes(bytes){bytes=Number(bytes)||0;if(bytes<1024)return`${bytes} B`;if(bytes<1048576)return`${(bytes/1024).toFixed(1)} KB`;if(bytes<1073741824)return`${(bytes/1048576).toFixed(1)} MB`;return`${(bytes/1073741824).toFixed(2)} GB`}
 function fileType(name){const extension=name.includes('.')?name.split('.').pop().toUpperCase():'DATEI';return `${extension}-Datei`}
 
+setupCollapsibleSections();
 buildAlarmInputUi();
 document.querySelectorAll('input[type="radio"],.switch input').forEach(input=>input.addEventListener('change',()=>{refreshVisibility();updateSaveBar()}));
 document.querySelectorAll('#configForm input,#configForm select').forEach(input=>{input.addEventListener('input',updateSaveBar);input.addEventListener('change',updateSaveBar)});
 $('updateChannel').addEventListener('change',updateManifestForChannel);
 document.querySelectorAll('.reveal').forEach(button=>button.addEventListener('click',()=>{const input=button.previousElementSibling;const visible=input.type==='text';input.type=visible?'password':'text';button.textContent=visible?'Anzeigen':'Verbergen'}));
-document.querySelectorAll('.sidebar a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));link.classList.add('active')}));
+document.querySelectorAll('.sidebar a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));link.classList.add('active');const id=link.getAttribute('href')?.slice(1);if(id)openSection(id)}));
 $('configForm').addEventListener('submit',async event=>{event.preventDefault();if(configSnapshot()===loadedSnapshot){updateSaveBar();return}if(!event.currentTarget.reportValidity())return;const button=$('saveButton');button.disabled=true;button.textContent='Wird gespeichert …';try{await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});notify('Konfiguration gespeichert. Das Gerät startet neu.')}catch(error){notify(error.message,true);button.disabled=false;button.textContent='Konfiguration speichern'}});
 $('checkUpdate').addEventListener('click',async()=>{const button=$('checkUpdate');button.disabled=true;button.textContent='Prüfung in Arbeit …';$('updateMessage').textContent='Firmwareprüfung wurde gestartet · Manifest wird angefordert';otaInProgress=true;try{await api('/api/firmware/check',{method:'POST'});notify('Firmwareprüfung wurde gestartet.');scheduleUpdatePoll(300)}catch(error){otaInProgress=false;button.disabled=false;button.textContent='Jetzt prüfen';notify(error.message,true)}});
 $('approveUpdate').addEventListener('click',async()=>{if(!confirm('Firmwareupdate jetzt laden und installieren?'))return;otaInProgress=true;$('approveUpdate').hidden=true;$('updateMessage').textContent='Update wurde freigegeben. Gerät lädt und installiert …';try{await api('/api/firmware/approve',{method:'POST'});notify('Update bestätigt. Download wird gestartet.');scheduleUpdatePoll(500)}catch(error){if(networkError(error)){reloadAfterReconnect=true;notify('Freigabe gesendet. Das Gerät ist vermutlich bereits im Update.');scheduleUpdatePoll(1000);return}otaInProgress=false;notify(error.message,true)}});
