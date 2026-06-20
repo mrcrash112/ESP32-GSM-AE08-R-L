@@ -145,6 +145,7 @@ struct UpdateState {
 
 void showUpdateStatus(const String &step, const String &detail, uint8_t progress);
 bool updateNetworkReady();
+String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
 void publishMioneStatus(bool force = false);
 
@@ -295,19 +296,27 @@ bool checkUpdateManifest(String &error) {
   updateState.failed = false;
   updateState.message = "Pruefe GitHub";
   showUpdateStatus("Manifest pruefen", "GitHub wird kontaktiert", 2);
+  String transport = updateTransportName();
+  queueSystemLog("UPDATE_MANIFEST_START", "transport=" + transport + ",url=" + config.updateManifestUrl);
   DynamicJsonDocument manifest(3072);
   DeserializationError parsed;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED || (ethernetReady && Ethernet.linkStatus() == LinkON)) {
     WiFiClientSecure tls;
     tls.setInsecure();
     HTTPClient request;
     request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    if (!request.begin(tls, config.updateManifestUrl)) { updateState.checking = false; error = "Manifest konnte nicht geoeffnet werden"; return false; }
+    if (!request.begin(tls, config.updateManifestUrl)) {
+      updateState.checking = false;
+      error = "Manifest konnte nicht geoeffnet werden";
+      queueSystemLog("UPDATE_MANIFEST_ERROR", "transport=" + transport + ",error=" + error);
+      return false;
+    }
     int status = request.GET();
     if (status != HTTP_CODE_OK) {
       request.end();
       updateState.checking = false;
       error = "Manifest HTTP " + String(status);
+      queueSystemLog("UPDATE_MANIFEST_ERROR", "transport=" + transport + ",http=" + String(status) + ",error=" + error);
       return false;
     }
     parsed = deserializeJson(manifest, request.getStream());
@@ -316,12 +325,14 @@ bool checkUpdateManifest(String &error) {
     showUpdateStatus("Manifest laden", "Mobilfunk", 2);
     if (!modem.downloadToFile(config.updateManifestUrl, BuildInfo::manifestPath, error)) {
       updateState.checking = false;
+      queueSystemLog("UPDATE_MANIFEST_ERROR", "transport=" + transport + ",error=" + error);
       return false;
     }
     File manifestFile = SD.open(BuildInfo::manifestPath, FILE_READ);
     if (!manifestFile) {
       updateState.checking = false;
       error = "Manifest-Datei konnte nicht geoeffnet werden";
+      queueSystemLog("UPDATE_MANIFEST_ERROR", "transport=" + transport + ",error=" + error);
       return false;
     }
     parsed = deserializeJson(manifest, manifestFile);
@@ -332,6 +343,7 @@ bool checkUpdateManifest(String &error) {
   if (parsed) {
     updateState.checking = false;
     error = String("Manifest ungueltig: ") + parsed.c_str();
+    queueSystemLog("UPDATE_MANIFEST_ERROR", "transport=" + transport + ",error=" + error);
     return false;
   }
   if (manifest["product"].as<String>() != BuildInfo::product) { error = "Manifest gehoert zu einem anderen Produkt"; return false; }
@@ -392,6 +404,10 @@ bool checkUpdateManifest(String &error) {
   else if (recoveryAvailable) updateState.message = "Recovery " + recoveryVersion + " verfuegbar";
   else if (webAvailable) updateState.message = "Weboberflaeche " + webVersion + " verfuegbar";
   else updateState.message = "Firmware und Recovery sind aktuell";
+  queueSystemLog("UPDATE_MANIFEST_OK", "transport=" + transport + ",version=" + version +
+                                       ",channel=" + channel + ",firmware=" + String(firmwareAvailable ? 1 : 0) +
+                                       ",recovery=" + String(recoveryAvailable ? 1 : 0) +
+                                       ",web=" + String(webAvailable ? 1 : 0));
   return true;
 }
 
@@ -437,27 +453,50 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
                   const String &label, uint8_t progressFrom, uint8_t progressTo,
                   String &error) {
   if (!githubUrl(url) || !validMd5(expectedMd5)) { error = "Download-Angaben ungueltig"; return false; }
-  if (WiFi.status() != WL_CONNECTED) {
+  String transport = updateTransportName();
+  String logBase = "file=" + label + ",transport=" + transport + ",url=" + url +
+                   ",expectedSize=" + String(expectedSize) + ",expectedMd5=" + expectedMd5;
+  queueSystemLog("UPDATE_DOWNLOAD_START", logBase);
+  bool tlsNetworkReady = WiFi.status() == WL_CONNECTED || (ethernetReady && Ethernet.linkStatus() == LinkON);
+  if (!tlsNetworkReady) {
     showUpdateStatus(label, "Mobilfunk", progressFrom);
     if (!modem.downloadToFile(url, path, error)) {
       SD.remove(path);
+      queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
       return false;
     }
     showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-    return verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+    bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+    queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
+                   logBase + (verified ? ",stored=1" : ",error=" + error));
+    return verified;
   }
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
   request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!request.begin(tls, url)) { error = "Download konnte nicht gestartet werden"; return false; }
+  if (!request.begin(tls, url)) {
+    error = "Download konnte nicht gestartet werden";
+    queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
+    return false;
+  }
   request.addHeader("Accept-Encoding", "identity");
   request.addHeader("Cache-Control", "no-cache");
   int status = request.GET();
-  if (status != HTTP_CODE_OK) { request.end(); error = "Download HTTP " + String(status); return false; }
+  if (status != HTTP_CODE_OK) {
+    request.end();
+    error = "Download HTTP " + String(status);
+    queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",http=" + String(status) + ",error=" + error);
+    return false;
+  }
   SD.remove(path);
   File target = SD.open(path, FILE_WRITE);
-  if (!target) { request.end(); error = "Download-Datei konnte nicht erstellt werden"; return false; }
+  if (!target) {
+    request.end();
+    error = "Download-Datei konnte nicht erstellt werden";
+    queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
+    return false;
+  }
   WiFiClient *stream = request.getStreamPtr();
   int total = request.getSize();
   size_t written = 0;
@@ -496,10 +535,16 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   if (!error.isEmpty() || written == 0 || (total > 0 && written != static_cast<size_t>(total))) {
     SD.remove(path);
     if (error.isEmpty()) error = "Download ist unvollstaendig";
+    queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",written=" + String(written) +
+                                             ",httpSize=" + String(total) + ",error=" + error);
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
-  return verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+  bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+  queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
+                 logBase + ",written=" + String(written) + ",httpSize=" + String(total) +
+                 (verified ? ",stored=1" : ",error=" + error));
+  return verified;
 }
 
 bool removeSdTree(const String &path) {
@@ -1122,8 +1167,16 @@ String activeNetworkName() {
   return "offline";
 }
 
+String updateTransportName() {
+  if (WiFi.status() == WL_CONNECTED) return "wlan";
+  if (ethernetReady && Ethernet.linkStatus() == LinkON) return "ethernet";
+  if (modem.packetDataConnected()) return "mobilfunk";
+  return "offline";
+}
+
 bool updateNetworkReady() {
   if (WiFi.status() == WL_CONNECTED) return true;
+  if (ethernetReady && Ethernet.linkStatus() == LinkON) return true;
   if (!config.updateCellularDownloads) return false;
   if (!modem.packetDataConnected()) modem.maintainDataFallback(true);
   return modem.packetDataConnected();
