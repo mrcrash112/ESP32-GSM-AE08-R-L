@@ -419,6 +419,17 @@ String fileCheckDetail(size_t actualSize, size_t expectedSize, const String &act
   return detail;
 }
 
+String fileMd5(const char *path) {
+  File check = SD.open(path, FILE_READ);
+  if (!check) return "";
+  MD5Builder md5;
+  md5.begin();
+  md5.addStream(check, check.size());
+  md5.calculate();
+  check.close();
+  return md5.toString();
+}
+
 bool verifyDownloadedFile(const char *path, const String &expectedMd5, size_t expectedSize, String &error) {
   File check = SD.open(path, FILE_READ);
   if (!check) { error = "Download-Datei fehlt"; return false; }
@@ -453,6 +464,8 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
                   const String &label, uint8_t progressFrom, uint8_t progressTo,
                   String &error) {
   if (!githubUrl(url) || !validMd5(expectedMd5)) { error = "Download-Angaben ungueltig"; return false; }
+  bool previousStatusServing = updateStatusCanServeWeb;
+  updateStatusCanServeWeb = false;
   String transport = updateTransportName();
   String logBase = "file=" + label + ",transport=" + transport + ",url=" + url +
                    ",expectedSize=" + String(expectedSize) + ",expectedMd5=" + expectedMd5;
@@ -463,12 +476,14 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     if (!modem.downloadToFile(url, path, error)) {
       SD.remove(path);
       queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
+      updateStatusCanServeWeb = previousStatusServing;
       return false;
     }
     showUpdateStatus(label, "MD5 wird geprueft", progressTo);
     bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
     queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
                    logBase + (verified ? ",stored=1" : ",error=" + error));
+    updateStatusCanServeWeb = previousStatusServing;
     return verified;
   }
   WiFiClientSecure tls;
@@ -478,6 +493,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   if (!request.begin(tls, url)) {
     error = "Download konnte nicht gestartet werden";
     queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
+    updateStatusCanServeWeb = previousStatusServing;
     return false;
   }
   request.addHeader("Accept-Encoding", "identity");
@@ -487,6 +503,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     request.end();
     error = "Download HTTP " + String(status);
     queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",http=" + String(status) + ",error=" + error);
+    updateStatusCanServeWeb = previousStatusServing;
     return false;
   }
   SD.remove(path);
@@ -495,6 +512,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     request.end();
     error = "Download-Datei konnte nicht erstellt werden";
     queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",error=" + error);
+    updateStatusCanServeWeb = previousStatusServing;
     return false;
   }
   WiFiClient *stream = request.getStreamPtr();
@@ -502,6 +520,8 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   size_t written = 0;
   uint32_t lastData = millis();
   uint8_t buffer[1024];
+  MD5Builder streamMd5;
+  streamMd5.begin();
   showUpdateStatus(label, total > 0 ? "0 / " + String(total / 1024) + " KB" : "Verbindung steht", progressFrom);
   while ((request.connected() || stream->available()) &&
          (total < 0 || written < static_cast<size_t>(total))) {
@@ -513,6 +533,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
         error = "Download konnte nicht gespeichert werden";
         break;
       }
+      streamMd5.add(buffer, received);
       written += received;
       lastData = millis();
     } else if (millis() - lastData > 15000) {
@@ -529,6 +550,8 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   }
   target.close();
   request.end();
+  streamMd5.calculate();
+  String streamHash = streamMd5.toString();
   if (error.isEmpty() && expectedSize > 0 && written != expectedSize) {
     error = "Download-Groesse falsch (Ist " + String(written) + " / Soll " + String(expectedSize) + " Byte)";
   }
@@ -536,14 +559,18 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
     SD.remove(path);
     if (error.isEmpty()) error = "Download ist unvollstaendig";
     queueSystemLog("UPDATE_DOWNLOAD_ERROR", logBase + ",written=" + String(written) +
-                                             ",httpSize=" + String(total) + ",error=" + error);
+                                             ",httpSize=" + String(total) + ",streamMd5=" + streamHash + ",error=" + error);
+    updateStatusCanServeWeb = previousStatusServing;
     return false;
   }
   showUpdateStatus(label, "MD5 wird geprueft", progressTo);
   bool verified = verifyDownloadedFile(path, expectedMd5, expectedSize, error);
+  String storedHash = verified ? expectedMd5 : fileMd5(path);
   queueSystemLog(verified ? "UPDATE_DOWNLOAD_OK" : "UPDATE_DOWNLOAD_ERROR",
                  logBase + ",written=" + String(written) + ",httpSize=" + String(total) +
+                 ",streamMd5=" + streamHash + ",fileMd5=" + storedHash +
                  (verified ? ",stored=1" : ",error=" + error));
+  updateStatusCanServeWeb = previousStatusServing;
   return verified;
 }
 
