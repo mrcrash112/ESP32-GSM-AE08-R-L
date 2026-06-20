@@ -149,6 +149,40 @@ String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
 void publishMioneStatus(bool force = false);
 
+void persistUpdateManualLock(const String &detail) {
+  Preferences prefs;
+  if (!prefs.begin("fw-update", false)) return;
+  prefs.putBool("manualLock", true);
+  prefs.putString("manualDetail", detail);
+  prefs.end();
+}
+
+void clearUpdateManualLock() {
+  Preferences prefs;
+  if (!prefs.begin("fw-update", false)) return;
+  prefs.putBool("manualLock", false);
+  prefs.remove("manualDetail");
+  prefs.end();
+}
+
+void restoreUpdateManualLock() {
+  Preferences prefs;
+  if (!prefs.begin("fw-update", true)) return;
+  bool locked = prefs.getBool("manualLock", false);
+  String detail = prefs.getString("manualDetail", "");
+  prefs.end();
+  if (!locked) return;
+  updateState.failed = true;
+  updateState.manualCheckRequired = true;
+  updateState.approved = false;
+  updateState.downloadQueued = false;
+  updateState.downloading = false;
+  updateState.installing = false;
+  updateState.message = "Manuelle Pruefung erforderlich";
+  updateState.detail = detail.isEmpty() ? "Automatische Updates bis zur manuellen Pruefung gesperrt" : detail;
+  updateState.progress = 0;
+}
+
 String updateInstallTimeText() {
   char value[8];
   snprintf(value, sizeof(value), "%02u:%02u", config.updateInstallMinute / 60, config.updateInstallMinute % 60);
@@ -817,7 +851,8 @@ bool scheduleUpdateRetry(const String &phase, const String &error, bool installA
   updateState.manualCheckRequired = true;
   updateState.message = "Manuelle Pruefung erforderlich";
   updateState.detail = error + " · " + String(kUpdateMaxAttempts) + " Versuche fehlgeschlagen";
-  showUpdateStatus("MANUELLE PRUEFUNG", "OTA Fehler 3x", 0);
+  persistUpdateManualLock(updateState.detail);
+  lastDisplay = 0;
   queueSystemLog("UPDATE_MANUAL_CHECK", "phase=" + phase + ",error=" + error);
   return false;
 }
@@ -1561,10 +1596,14 @@ void setupWeb() {
     });
   web.on("/api/firmware/check", HTTP_POST, [] {
     if (!authorized()) return;
+    clearUpdateManualLock();
     updateCheckRequested = true;
     updateState.failed = false;
     updateState.manualCheckRequired = false;
     updateState.attempts = 0;
+    updateState.approved = false;
+    updateState.downloadQueued = false;
+    updateState.downloaded = false;
     updateState.checking = true;
     updateState.message = "Firmwarepruefung wurde gestartet";
     updateState.detail = "Manifest wird angefordert";
@@ -1766,9 +1805,18 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     DynamicJsonDocument input(384);
     DeserializationError parsed = deserializeJson(input, payload, length);
     bool ok = !parsed && mqttIdentityValid(input.as<JsonObjectConst>());
-    if (ok && incoming == updateCheckTopic) updateCheckRequested = true;
+    if (ok && incoming == updateCheckTopic) {
+      clearUpdateManualLock();
+      updateState.failed = false;
+      updateState.manualCheckRequired = false;
+      updateState.attempts = 0;
+      updateState.approved = false;
+      updateState.downloadQueued = false;
+      updateState.downloaded = false;
+      updateCheckRequested = true;
+    }
     if (ok && incoming == updateApproveTopic) {
-      ok = updateState.available && !updateState.installing;
+      ok = updateState.available && !updateState.installing && !updateState.manualCheckRequired && !updateState.failed;
       if (ok) updateState.approved = true;
     }
     String resultTopic = root + "/update/result";
@@ -2054,7 +2102,7 @@ void maintainUpdates() {
       updateButtonIdle = (updateButtonIdle * 15 + buttonValue) / 16;
     }
     updateButtonSince = 0;
-  } else if (abs(buttonValue - updateButtonIdle) > 250) {
+  } else if (!updateState.manualCheckRequired && !updateState.failed && abs(buttonValue - updateButtonIdle) > 250) {
     if (!updateButtonSince) updateButtonSince = millis();
     else if (millis() - updateButtonSince >= 1500) {
       updateState.approved = true;
@@ -2363,11 +2411,11 @@ void updateDisplay() {
   display.setCursor(0, 0);
   display.printf("%s\n", clockText().c_str());
   display.drawFastHLine(0, 9, 128, SSD1306_WHITE);
-  if (updateState.installing || updateState.failed) {
+  if (updateState.installing || updateState.downloading || (updateState.failed && !updateState.manualCheckRequired)) {
     renderUpdateStatus(updateState.message, updateState.detail, updateState.progress);
     return;
   }
-  if (updateState.available) {
+  if (updateState.available && !updateState.manualCheckRequired && !updateState.failed) {
     String target = updateState.firmwareAvailable && updateState.recoveryAvailable ? "FW " + updateState.version + " REC " + updateState.recoveryVersion :
                     updateState.firmwareAvailable ? "Firmware " + updateState.version :
                     updateState.recoveryAvailable ? "Recovery " + updateState.recoveryVersion :
@@ -2463,6 +2511,7 @@ void setup() {
   beginSharedSpi();
   showBootStatus("SD-Karte", 22, config.sdEnabled ? "wird geprueft" : "deaktiviert");
   beginSd();
+  restoreUpdateManualLock();
   recoverInterruptedWebUpdate();
   showBootStatus("SD-Karte", 30, !config.sdEnabled ? "deaktiviert" : (sdReady ? "bereit" : "FEHLER"));
 

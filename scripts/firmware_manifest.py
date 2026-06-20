@@ -46,7 +46,8 @@ with tarfile.open(web_path, "w", format=tarfile.USTAR_FORMAT) as archive:
         if source.is_symlink():
             parser.error("www directory must not contain symbolic links")
         relative = source.relative_to(www_dir).as_posix()
-        if relative == "version.json":
+        parts = pathlib.PurePosixPath(relative).parts
+        if relative == "version.json" or any(part.startswith(".") for part in parts) or any(" Kopie" in part for part in parts):
             continue
         info = archive.gettarinfo(str(source), arcname=relative)
         info.uid = 0
