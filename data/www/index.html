@@ -167,6 +167,10 @@
             <label><span>Web-Benutzer</span><input id="webUser" type="text" required maxlength="32" autocomplete="username"></label>
             <label><span>Neues Web-Passwort</span><div class="password"><input id="webPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div><small>Mindestens 8 Zeichen.</small></label>
           </div>
+          <div class="danger-zone">
+            <div><h3>NVS Werkseinstellungen</h3><p>Alle im NVS gespeicherten Parameter inklusive WLAN-Daten, Zugangsdaten, Update-Sperren und Alarmempfänger werden gelöscht.</p></div>
+            <button type="button" class="button danger" id="nvsFactoryReset">NVS löschen</button>
+          </div>
         </section>
 
         <section class="card" id="updates" data-feature="updates">

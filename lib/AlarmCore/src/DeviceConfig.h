@@ -29,25 +29,25 @@ struct DeviceConfig {
   String deviceId;
   bool provisioned = false;
 
-  bool wifiEnabled = true;
+  bool wifiEnabled = false;
   String wifiSsid;
   String wifiPassword;
   IPv4Config wifiIp;
 
-  bool ethernetEnabled = true;
+  bool ethernetEnabled = false;
   IPv4Config ethernetIp;
 
-  bool sdEnabled = true;
-  bool rtcEnabled = true;
-  bool displayEnabled = true;
+  bool sdEnabled = false;
+  bool rtcEnabled = false;
+  bool displayEnabled = false;
   uint16_t logIntervalSeconds = 10;
-  bool cellularEnabled = true;
+  bool cellularEnabled = false;
   String simPin;
   String apn;
   String apnUser;
   String apnPassword;
 
-  bool mqttEnabled = true;
+  bool mqttEnabled = false;
   String mqttHost;
   uint16_t mqttPort = 1883;
   String mqttUser;
@@ -58,14 +58,14 @@ struct DeviceConfig {
   String offlineTcpHost;
   uint16_t offlineTcpPort = 0;
   String commandSecret;
-  bool alarmProgressEnabled = true;
+  bool alarmProgressEnabled = false;
 
   InputAlarmConfig inputAlarms[4];
 
   String webUser = "admin";
   String webPassword;
 
-  bool updateCheckEnabled = true;
+  bool updateCheckEnabled = false;
   bool updateCellularDownloads = false;
   bool updateAutoInstall = false;
   uint16_t updateInstallMinute = 180;

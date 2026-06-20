@@ -20,6 +20,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <nvs_flash.h>
 #include <time.h>
 
 #include "BoardPins.h"
@@ -1489,7 +1490,7 @@ void beginSharedSpi() {
 }
 
 void beginSd() {
-  if (!config.sdEnabled) return;
+  if (!config.sdEnabled && config.provisioned) return;
   sdReady = SD.begin(BoardPins::sdCs, SPI, kSdSpiFrequency);
   if (sdReady) {
     SD.mkdir("/www");
@@ -1623,6 +1624,14 @@ void setupWeb() {
     if (!modem.restoreFactoryDefaults(error)) return errorResponse(502, error);
     queueSystemLog("MODEM", "Factory-Defaults gesetzt");
     web.send(200, "application/json", "{\"ok\":true}");
+  });
+  web.on("/api/system/nvs-reset", HTTP_POST, [] {
+    if (!authorized()) return;
+    web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
+    delay(100);
+    nvs_flash_erase();
+    nvs_flash_init();
+    ESP.restart();
   });
   web.on("/api/files", HTTP_GET, [] {
     if (!authorized()) return;
