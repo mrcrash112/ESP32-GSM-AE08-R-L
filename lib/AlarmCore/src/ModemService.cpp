@@ -58,7 +58,9 @@ void ModemService::begin(const DeviceConfig &config) {
   if (!enabled_) return;
   pinMode(BoardPins::modemReset, OUTPUT);
   digitalWrite(BoardPins::modemReset, HIGH);
+  serial_.setRxBufferSize(16384);
   serial_.begin(BoardPins::modemBaud, SERIAL_8N1, BoardPins::modemRx, BoardPins::modemTx);
+  serial_.setTimeout(3000);
   delay(200);
   command("AT", "OK", 1000);
   command("ATE0", "OK", 1000);
@@ -212,7 +214,7 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
   SD.remove(path);
   File target = SD.open(path, FILE_WRITE);
   if (!target) { error = "Zieldatei konnte nicht erstellt werden"; return false; }
-  uint8_t buffer[256];
+  uint8_t buffer[1024];
   size_t written = 0;
   uint32_t lastByte = millis();
   while (written < size && millis() - lastByte < 30000) {
@@ -287,7 +289,7 @@ bool ModemService::downloadSim7500(const String &url, const char *path, String &
   uint8_t buffer[256];
   int offset = 0;
   while (offset < total) {
-    int requested = min(1024, total - offset);
+    int requested = min(512, total - offset);
     serial_.println("AT+HTTPREAD=" + String(offset) + "," + String(requested));
     if (!waitForLine("+HTTPREAD:", answer, 10000)) { error = "SIM7500 HTTPREAD ohne Antwort"; break; }
     int chunk = simReadSize(answer);
@@ -304,7 +306,7 @@ bool ModemService::downloadSim7500(const String &url, const char *path, String &
       lastByte = millis();
     }
     if (!error.isEmpty()) break;
-    waitFor("OK", answer, 10000);
+    if (!waitForLine("OK", answer, 10000)) { error = "SIM7500 HTTPREAD nicht abgeschlossen"; break; }
     offset += chunk;
   }
   target.close();
