@@ -1492,6 +1492,99 @@ void maintainSystemLog(bool force = false) {
   if (written == batch.length()) pendingSystemLog = "";
 }
 
+String readSystemLogTail(uint16_t limit, String &error) {
+  if (!sdReady) {
+    error = "SD-Karte nicht verfuegbar";
+    return "";
+  }
+  if (limit < 1) limit = 1;
+  if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
+
+  digitalWrite(BoardPins::ethernetCs, HIGH);
+  File logFile = SD.open("/logs/system.csv", FILE_READ);
+  if (!logFile) {
+    error = "Systemprotokoll konnte nicht geoeffnet werden";
+    return "";
+  }
+
+  size_t fileSize = logFile.size();
+  if (fileSize == 0) {
+    logFile.close();
+    return "";
+  }
+
+  size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
+  if (startOffset > 0) {
+    logFile.seek(startOffset);
+    while (logFile.position() < fileSize) {
+      if (logFile.read() == '\n') break;
+      delay(0);
+    }
+  }
+
+  String lines[kLogMaxResponseLines];
+  uint16_t count = 0;
+  uint16_t head = 0;
+  String line;
+  line.reserve(256);
+  uint8_t buffer[512];
+
+  while (logFile.position() < fileSize) {
+    size_t remaining = fileSize - logFile.position();
+    size_t wanted = min(sizeof(buffer), remaining);
+    int read = logFile.read(buffer, wanted);
+    if (read <= 0) break;
+    for (int i = 0; i < read; ++i) {
+      char c = static_cast<char>(buffer[i]);
+      if (c == '\r') continue;
+      if (c == '\n') {
+        line.trim();
+        if (!line.isEmpty() && line != "timestamp;event;details") {
+          if (count < limit) {
+            lines[count++] = line;
+          } else {
+            lines[head] = line;
+            head = (head + 1) % limit;
+          }
+        }
+        line = "";
+      } else {
+        if (line.length() < 512) line += c;
+      }
+    }
+    delay(0);
+  }
+
+  line.trim();
+  if (!line.isEmpty() && line != "timestamp;event;details") {
+    if (count < limit) {
+      lines[count++] = line;
+    } else {
+      lines[head] = line;
+      head = (head + 1) % limit;
+    }
+  }
+
+  logFile.close();
+
+  String body;
+  body.reserve(min<size_t>(kLogTailMaxBytes, 16384));
+  if (count == 0) return body;
+  if (count < limit) {
+    for (uint16_t i = 0; i < count; ++i) {
+      body += lines[i];
+      body += '\n';
+    }
+    return body;
+  }
+  for (uint16_t i = 0; i < limit; ++i) {
+    uint16_t index = (head + i) % limit;
+    body += lines[index];
+    body += '\n';
+  }
+  return body;
+}
+
 const char *resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_POWERON: return "power-on";
@@ -1705,15 +1798,16 @@ void setupWeb() {
   });
   web.on("/api/logs", HTTP_GET, [] {
     if (!authorized()) return;
-    maintainSystemLog(true);
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
     if (!SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
-    digitalWrite(BoardPins::ethernetCs, HIGH);
-    File logFile = SD.open("/logs/system.csv", FILE_READ);
-    if (!logFile) return errorResponse(500, "Systemprotokoll konnte nicht geoeffnet werden");
+    int limit = web.arg("limit").toInt();
+    if (limit < 1) limit = 100;
+    if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
+    String error;
+    String body = readSystemLogTail(static_cast<uint16_t>(limit), error);
+    if (!error.isEmpty()) return errorResponse(500, error);
     web.sendHeader("Cache-Control", "no-store, max-age=0");
-    web.streamFile(logFile, "text/plain; charset=utf-8");
-    logFile.close();
+    web.send(200, "text/plain; charset=utf-8", body);
   });
   web.on("/api/file", HTTP_GET, [] {
     if (!authorized()) return;

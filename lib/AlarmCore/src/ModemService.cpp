@@ -297,7 +297,7 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
 bool ModemService::refreshImei(uint32_t timeout) {
   if (!enabled_ || modemType_.isEmpty()) return false;
   if (!imei_.isEmpty()) return true;
-  if (millis() - lastImeiAttempt_ < 5000) return false;
+  if (lastImeiAttempt_ != 0 && millis() - lastImeiAttempt_ < 5000) return false;
   lastImeiAttempt_ = millis();
   for (uint8_t attempt = 0; attempt < 3 && imei_.isEmpty(); ++attempt) {
     while (serial_.available()) serial_.read();
