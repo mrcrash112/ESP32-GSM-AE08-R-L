@@ -1705,63 +1705,15 @@ void setupWeb() {
   });
   web.on("/api/logs", HTTP_GET, [] {
     if (!authorized()) return;
-    if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
     maintainSystemLog(true);
+    if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
     if (!SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
-    int limit = web.arg("limit").toInt();
-    if (limit < 1) limit = 100;
-    if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
     digitalWrite(BoardPins::ethernetCs, HIGH);
     File logFile = SD.open("/logs/system.csv", FILE_READ);
     if (!logFile) return errorResponse(500, "Systemprotokoll konnte nicht geoeffnet werden");
-
-    size_t fileSize = logFile.size();
-    size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
-    if (startOffset > 0) {
-      logFile.seek(startOffset);
-      while (logFile.position() < fileSize) {
-        ++startOffset;
-        if (logFile.read() == '\n') break;
-        delay(0);
-      }
-    }
-
-    size_t scanStart = startOffset;
-    uint16_t linesInWindow = 0;
-    logFile.seek(scanStart);
-    while (logFile.position() < fileSize) {
-      if (logFile.read() == '\n') ++linesInWindow;
-      delay(0);
-    }
-    if (fileSize > 0) {
-      logFile.seek(fileSize - 1);
-      if (logFile.read() != '\n') ++linesInWindow;
-    }
-
-    uint16_t skipLines = linesInWindow > static_cast<uint16_t>(limit) ? linesInWindow - limit : 0;
-    logFile.seek(scanStart);
-    while (skipLines > 0 && logFile.position() < fileSize) {
-      if (logFile.read() == '\n') --skipLines;
-      delay(0);
-    }
-
-    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    web.send(200, "text/plain; charset=utf-8", "");
-    char chunk[385];
-    while (logFile.position() < fileSize) {
-      size_t remaining = fileSize - logFile.position();
-      size_t wanted = min(sizeof(chunk) - 1, remaining);
-      int read = logFile.read(reinterpret_cast<uint8_t *>(chunk), wanted);
-      if (read <= 0) break;
-      for (int i = 0; i < read; ++i) {
-        if (chunk[i] == '\0') chunk[i] = ' ';
-      }
-      chunk[read] = '\0';
-      web.sendContent(chunk);
-      delay(0);
-    }
+    web.sendHeader("Cache-Control", "no-store, max-age=0");
+    web.streamFile(logFile, "text/plain; charset=utf-8");
     logFile.close();
-    web.sendContent("");
   });
   web.on("/api/file", HTTP_GET, [] {
     if (!authorized()) return;
