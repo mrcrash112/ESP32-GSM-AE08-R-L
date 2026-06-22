@@ -82,8 +82,7 @@ void ModemService::begin(const DeviceConfig &config) {
   if (detectedName.indexOf("EC25") >= 0) modemType_ = "EC25";
   else if (detectedName.indexOf("SIM7500") >= 0) modemType_ = "SIM7500";
   else modemType_ = "";
-  serial_.println("AT+GSN");
-  imei_ = extractImei(readUntil(1500));
+  refreshImei(2000);
   pollStatus();
 }
 
@@ -186,13 +185,13 @@ bool ModemService::restoreFactoryDefaults(String &error) {
   command("AT", "OK", 3000);
   command("ATE0", "OK", 1000);
   command("AT+CMGF=1", "OK", 1000);
-  serial_.println("AT+GSN");
-  imei_ = extractImei(readUntil(1500));
+  refreshImei(2000);
   pollStatus();
   return true;
 }
 
 void ModemService::loop() {
+  if (enabled_ && imei_.isEmpty() && millis() - lastImeiAttempt_ >= 5000) refreshImei();
   if (enabled_ && millis() - lastPoll_ >= 15000) pollStatus();
 }
 
@@ -293,6 +292,25 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
   String trailer;
   waitFor("OK", trailer, 10000);
   return true;
+}
+
+bool ModemService::refreshImei(uint32_t timeout) {
+  if (!enabled_ || modemType_.isEmpty()) return false;
+  if (!imei_.isEmpty()) return true;
+  if (millis() - lastImeiAttempt_ < 5000) return false;
+  lastImeiAttempt_ = millis();
+  for (uint8_t attempt = 0; attempt < 3 && imei_.isEmpty(); ++attempt) {
+    while (serial_.available()) serial_.read();
+    serial_.println("AT+GSN");
+    String response = readUntil(timeout);
+    String candidate = extractImei(response);
+    if (!candidate.isEmpty()) {
+      imei_ = candidate;
+      return true;
+    }
+    delay(500);
+  }
+  return false;
 }
 
 bool ModemService::writePromptPayload(const String &commandText, const String &payload, String &answer,
@@ -483,6 +501,7 @@ String ModemService::readUntil(uint32_t timeout) {
 
 void ModemService::pollStatus() {
   lastPoll_ = millis();
+  if (imei_.isEmpty()) refreshImei();
   serial_.println("AT+CSQ");
   String csq = readUntil(1500);
   int marker = csq.indexOf("+CSQ:");
