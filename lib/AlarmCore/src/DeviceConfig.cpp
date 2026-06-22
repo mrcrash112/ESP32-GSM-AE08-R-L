@@ -173,6 +173,8 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   mqttPort = mqtt["port"] | mqttPort;
   mqttUser = mqtt["user"] | mqttUser;
   if (mqtt["password"].is<const char *>() && mqtt["password"] != "***") mqttPassword = mqtt["password"].as<String>();
+  mqttBaseTopic = mqtt["baseTopic"] | mqttBaseTopic;
+  mqttBaseTopic.trim();
 
   JsonObjectConst tcp = root["offlineTcp"];
   offlineTcpEnabled = tcp["enabled"] | offlineTcpEnabled;
@@ -234,6 +236,8 @@ bool DeviceConfig::validate(String &error) const {
   else if (!ethernetIp.dhcp && (!validIp(ethernetIp.address) || !validIp(ethernetIp.gateway) || !validIp(ethernetIp.subnet))) error = "Statische Ethernet-IP ist ungueltig";
   else if (mqttEnabled && (!mqttHost.isEmpty() && mqttPort == 0)) error = "MQTT-Port ist ungueltig";
   else if (mqttUser.indexOf('#') >= 0 || mqttUser.indexOf('+') >= 0 || mqttUser.indexOf('/') >= 0) error = "MQTT-Benutzername darf keine Topic-Sonderzeichen enthalten";
+  else if (mqttEnabled && mqttBaseTopic.isEmpty()) error = "System-ID fehlt";
+  else if (mqttBaseTopic.indexOf('#') >= 0 || mqttBaseTopic.indexOf('+') >= 0 || mqttBaseTopic.indexOf('/') >= 0) error = "System-ID darf keine Topic-Sonderzeichen enthalten";
   else if (offlineTcpEnabled && offlineTcpPort == 0) error = "Offline-TCP-Port fehlt";
   else if (!safeAtValue(apn) || !safeAtValue(apnUser) || !safeAtValue(apnPassword)) error = "Mobilfunk-Zugangsdaten enthalten ungueltige Zeichen";
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";

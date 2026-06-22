@@ -102,7 +102,7 @@ function fillForm(c){
   setChecked('ethernetEnabled',c.ethernet.enabled);radio('ethernetIpMode',c.ethernet.ip.dhcp);setValue('ethernetAddress',c.ethernet.ip.address);setValue('ethernetGateway',c.ethernet.ip.gateway);setValue('ethernetSubnet',c.ethernet.ip.subnet);setValue('ethernetDns',c.ethernet.ip.dns);
   setChecked('sdEnabled',c.hardware.sd);setChecked('rtcEnabled',c.hardware.rtc);setChecked('displayEnabled',c.hardware.display);setValue('logIntervalSeconds',c.logging?.intervalSeconds||10);
   setValue('apn',c.cellular.apn);setValue('apnUser',c.cellular.user);
-  setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
+  setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttBaseTopic',c.mqtt.baseTopic);setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
   setChecked('offlineTcpEnabled',c.offlineTcp.enabled);setValue('offlineTcpHost',c.offlineTcp.host);setValue('offlineTcpPort',c.offlineTcp.port);
   setChecked('alarmProgressEnabled',c.notifications?.alarmProgress!==false);
   fillAlarmInputs(c.alarmInputs||[]);
@@ -120,7 +120,7 @@ function buildConfig(){const c=loadedConfig;return{
   hardware:{sd:checked('sdEnabled'),rtc:checked('rtcEnabled'),display:checked('displayEnabled')},
   logging:{intervalSeconds:number('logIntervalSeconds')},
   cellular:{enabled:true,simPin:secret('simPin',c.cellular.simPin),apn:value('apn'),user:value('apnUser'),password:secret('apnPassword',c.cellular.password)},
-  mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:c.mqtt.baseTopic||'mione'},
+  mqtt:{enabled:checked('mqttEnabled'),host:value('mqttHost'),port:number('mqttPort'),user:value('mqttUser'),password:secret('mqttPassword',c.mqtt.password),baseTopic:value('mqttBaseTopic')},
   offlineTcp:{enabled:checked('offlineTcpEnabled'),host:value('offlineTcpHost'),port:number('offlineTcpPort'),secret:secret('commandSecret',c.offlineTcp.secret)},
   notifications:{alarmProgress:checked('alarmProgressEnabled')},
   alarmInputs:buildAlarmInputs(),

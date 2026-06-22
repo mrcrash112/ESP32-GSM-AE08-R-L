@@ -114,6 +114,7 @@
               <div class="mione-live waiting" id="imeiMatchStatus"><i></i><div><span>IMEI-Abgleich</span><strong id="imeiMatchTitle">Warte auf Konfiguration</strong><small id="imeiMatchMessage">–</small></div></div>
             </div>
             <div class="fields two">
+              <label class="wide"><span>System-ID</span><input id="mqttBaseTopic" type="text" maxlength="128" placeholder="mione"><small>TopTopic für alle MQTT-Themen. Muss gesetzt sein, wenn MQTT aktiv ist.</small></label>
               <label><span>Broker / Hostname</span><input id="mqttHost" type="text" maxlength="128" placeholder="mqtt.example.de"></label>
               <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
               <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>

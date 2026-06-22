@@ -103,26 +103,28 @@ Tastenkombination bestaetigt kein Firmwareupdate.
 
 ## MQTT
 
-Basis-Topic ist standardmaessig `mione`:
+Die System-ID ist das MQTT-TopTopic und standardmaessig `mione`:
+
+MQTT-Benutzername und Passwort dienen weiterhin nur der Broker-Anmeldung.
 
 Die aktuelle MiOne-Anwendung sendet alle fuenf Empfaenger gemeinsam als
 retained Nachricht. Alarme werden separat und nicht retained gesendet:
 
 ```text
-<mqtt_benutzername>/Alarmfunktionen/Config/Mobile
-<mqtt_benutzername>/Alarmfunktionen/Config/Mobile/modemImei
-<mqtt_benutzername>/Alarmfunktionen/Heartbeat
-<mqtt_benutzername>/Alarmfunktionen/Alarm
+<system-id>/Alarmfunktionen/Config/Mobile
+<system-id>/Alarmfunktionen/Config/Mobile/modemImei
+<system-id>/Alarmfunktionen/Heartbeat
+<system-id>/Alarmfunktionen/Alarm
 ```
 
 Wenn `Alarmfortschritt` in der Web-Konfiguration aktiviert ist, veroeffentlicht
 das Geraet fuer jede SMS und jeden Anruf `starting`, `succeeded` oder `failed`
-unter `<mqtt_benutzername>/Alarmfunktionen/AlarmStatus`. Jede Meldung enthaelt IMEI,
+unter `<system-id>/Alarmfunktionen/AlarmStatus`. Jede Meldung enthaelt IMEI,
 Alarmcode, Alarmtext, Rufnummer und Alarmierungsart. MiOne zeigt nur Meldungen
 mit der dort konfigurierten Modem-IMEI an.
 
 Alle fuenf Sekunden sendet das Geraet ausserdem einen retained Modemstatus unter
-`<mqtt_benutzername>/Alarmfunktionen/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
+`<system-id>/Alarmfunktionen/ModemStatus`. Er enthaelt Mobilfunkregistrierung,
 Datenkontext, Signal, Netzbetreiber und den vollstaendigen OTA-Status fuer
 Hauptfirmware, Recovery und WWW. MiOne wertet 60 Sekunden ohne neue Meldung als
 Verbindungsverlust.
@@ -181,7 +183,7 @@ Die aktuelle MiOne-Anwendung sendet einen Alarm in dieser Form:
 }
 ```
 
-Das fruehere Topic `<mqtt_benutzername>/Alarmfunktionen/Alarme` wird weiterhin empfangen.
+Das fruehere Topic `<system-id>/Alarmfunktionen/Alarme` wird weiterhin empfangen.
 Vor der Verarbeitung muss `modemImei` exakt der direkt aus dem Modem gelesenen
 IMEI entsprechen; andernfalls werden weder SMS noch Anrufe ausgeloest.
 
