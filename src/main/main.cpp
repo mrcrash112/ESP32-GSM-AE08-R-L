@@ -164,6 +164,7 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 bool updateNetworkReady();
 String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
+void cleanupUpdateAttemptFiles();
 String mqttDeviceRoot();
 String mioneTopicRoot();
 String mioneConfigRoot();
@@ -204,6 +205,22 @@ void restoreUpdateManualLock() {
   updateState.installing = false;
   updateState.message = "Manuelle Pruefung erforderlich";
   updateState.detail = detail.isEmpty() ? "Automatische Updates bis zur manuellen Pruefung gesperrt" : detail;
+  updateState.progress = 0;
+}
+
+void resetStaleUpdateStateForVersionChange(const String &previousVersion, const String &newVersion) {
+  if (previousVersion.isEmpty() || previousVersion == newVersion) return;
+  queueSystemLog("UPDATE_MANIFEST_VERSION_CHANGED", "old=" + previousVersion + ",new=" + newVersion);
+  cleanupUpdateAttemptFiles();
+  clearUpdateManualLock();
+  updateState.approved = false;
+  updateState.installing = false;
+  updateState.downloading = false;
+  updateState.downloadQueued = false;
+  updateState.failed = false;
+  updateState.manualCheckRequired = false;
+  updateState.attempts = 0;
+  updateState.detail = "";
   updateState.progress = 0;
 }
 
@@ -350,6 +367,7 @@ bool checkUpdateManifest(String &error) {
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
   if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
+  String previousVersion = updateState.version;
   updateState.checking = true;
   updateState.failed = false;
   updateState.message = "Pruefe GitHub";
@@ -414,6 +432,7 @@ bool checkUpdateManifest(String &error) {
   size_t firmwareSize = firmware["size"] | manifest["size"] | 0;
   firmwareMd5.toLowerCase();
   if (version.isEmpty() || !githubUrl(firmwareUrl) || !validMd5(firmwareMd5) || firmwareSize == 0) { error = "Firmware-Angaben im Manifest fehlen"; return false; }
+  resetStaleUpdateStateForVersionChange(previousVersion, version);
   bool firmwareAvailable = newerVersion(version, BuildInfo::version);
   JsonObjectConst recovery = manifest["recovery"];
   String recoveryUrl = recovery["url"] | "";
@@ -2365,7 +2384,6 @@ void maintainButtons() {
 }
 
 void maintainUpdates() {
-  if (updateState.manualCheckRequired) return;
   if (updateState.approved && !updateState.installing) {
     updateState.approved = false;
     updateState.failed = false;
@@ -2412,6 +2430,7 @@ void maintainUpdates() {
     publishUpdateState();
     return;
   }
+  if (updateState.manualCheckRequired) return;
   if (updateState.available && !updateState.downloaded && !updateState.failed) {
     String error;
     updateStatusCanServeWeb = true;
