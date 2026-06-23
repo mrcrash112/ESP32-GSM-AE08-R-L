@@ -76,6 +76,7 @@ void DeviceConfig::setDefaults(const String &chipId) {
   mqttPort = 1883;
   mqttUser = "mqtt_master_key";
   mqttPassword = "dyjpaz-xakfip-1guwdI";
+  mqttServiceEnabled = false;
   updateManifestUrl = "https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/latest/download/firmware.json";
 }
 
@@ -116,6 +117,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   mqtt["user"] = mqttUser;
   secret(mqtt, "password", mqttPassword, includeSecrets);
   mqtt["baseTopic"] = mqttBaseTopic;
+  mqtt["serviceEnabled"] = mqttServiceEnabled;
   mqtt["topTopic"] = mqttTopTopic;
 
   JsonObject tcp = root.createNestedObject("offlineTcp");
@@ -197,6 +199,9 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   mqttBaseTopic.trim();
   mqttTopTopic = mqtt["topTopic"] | mqttTopTopic;
   mqttTopTopic.trim();
+  JsonVariantConst mqttService = mqtt["serviceEnabled"];
+  if (mqttService.isNull()) mqttServiceEnabled = !mqttTopTopic.isEmpty();
+  else mqttServiceEnabled = mqttService | mqttServiceEnabled;
 
   JsonObjectConst tcp = root["offlineTcp"];
   offlineTcpEnabled = tcp["enabled"] | offlineTcpEnabled;
@@ -256,10 +261,11 @@ bool DeviceConfig::validate(String &error) const {
   else if (deviceId.isEmpty() || deviceId.length() > 48) error = "deviceId ist ungueltig";
   else if (!wifiIp.dhcp && (!validIp(wifiIp.address) || !validIp(wifiIp.gateway) || !validIp(wifiIp.subnet))) error = "Statische WLAN-IP ist ungueltig";
   else if (!ethernetIp.dhcp && (!validIp(ethernetIp.address) || !validIp(ethernetIp.gateway) || !validIp(ethernetIp.subnet))) error = "Statische Ethernet-IP ist ungueltig";
-  else if (mqttEnabled && (!mqttHost.isEmpty() && mqttPort == 0)) error = "MQTT-Port ist ungueltig";
+  else if ((mqttEnabled || mqttServiceEnabled) && mqttHost.isEmpty()) error = "MQTT-Broker fehlt";
+  else if ((mqttEnabled || mqttServiceEnabled) && mqttPort == 0) error = "MQTT-Port ist ungueltig";
   else if (mqttUser.indexOf('#') >= 0 || mqttUser.indexOf('+') >= 0 || mqttUser.indexOf('/') >= 0) error = "MQTT-Benutzername darf keine Topic-Sonderzeichen enthalten";
   else if (mqttEnabled && !validSystemId(mqttBaseTopic)) error = "System-ID fehlt oder ist ungueltig";
-  else if (!validMqttTopicRoot(mqttTopTopic)) error = "TopTopic darf keine Topic-Sonderzeichen enthalten";
+  else if (mqttServiceEnabled && !validMqttTopicRoot(mqttTopTopic)) error = "TopTopic darf keine Topic-Sonderzeichen enthalten";
   else if (offlineTcpEnabled && offlineTcpPort == 0) error = "Offline-TCP-Port fehlt";
   else if (!safeAtValue(apn) || !safeAtValue(apnUser) || !safeAtValue(apnPassword)) error = "Mobilfunk-Zugangsdaten enthalten ungueltige Zeichen";
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";

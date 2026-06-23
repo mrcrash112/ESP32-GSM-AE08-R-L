@@ -128,17 +128,17 @@
 
         <section class="card" id="services">
           <div class="section-heading"><div><span class="step">04</span><h2>Dienste MQTT</h2><p>Zusätzlicher Topic-Weg für Home Assistant, HEMS und andere Dienste.</p></div></div>
-          <div class="subsection">
-            <div class="subsection-title"><div><h3>MQTT Broker</h3><p>Broker-Daten für den zweiten MQTT-Pfad und die Dienste-Anbindung.</p></div></div>
+          <div class="subsection" id="mqttBrokerSection" data-feature="mqttService">
+            <div class="subsection-title"><div><h3>MQTT Broker</h3><p>Broker-Daten für den zweiten MQTT-Pfad und die Dienste-Anbindung. Nur bei Bedarf aktivieren.</p></div><label class="switch"><input id="mqttServiceEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="fields two">
               <label><span>Broker / Hostname</span><input id="mqttHost" type="text" maxlength="128" placeholder="mqtt.example.de"></label>
               <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
               <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
               <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
             </div>
-          </div>
-          <div class="fields two">
-            <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Optionaler zweiter Topic-Weg für separate Datenkopien.</small></label>
+            <div class="fields two">
+              <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Wird nur aktiv benutzt, wenn der Dienste-Broker eingeschaltet ist.</small></label>
+            </div>
           </div>
           <div class="subsection" data-feature="offlineTcp">
             <div class="subsection-title"><div><h3>TCP-Socket Direktverbindung</h3><p>Direkter Befehlskanal im lokalen WLAN oder Ethernet.</p></div><label class="switch"><input id="offlineTcpEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>

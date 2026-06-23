@@ -2038,6 +2038,7 @@ String mioneConfigRoot() {
 }
 
 String serviceMqttRoot() {
+  if (!config.mqttServiceEnabled) return "";
   String root = config.mqttTopTopic;
   root.trim();
   return root;
