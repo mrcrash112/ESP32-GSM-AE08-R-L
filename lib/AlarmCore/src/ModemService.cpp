@@ -192,6 +192,7 @@ bool ModemService::restoreFactoryDefaults(String &error) {
 }
 
 void ModemService::loop() {
+  SystemRuntime::kickWatchdog();
   if (enabled_ && imei_.isEmpty() && millis() - lastImeiAttempt_ >= 5000) refreshImei();
   if (enabled_ && millis() - lastPoll_ >= 15000) pollStatus();
 }

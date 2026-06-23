@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "0.1.56_Beta"
+#define FIRMWARE_VERSION "0.1.57_Beta"
 #endif
 
 #ifndef RECOVERY_VERSION

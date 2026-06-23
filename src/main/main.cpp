@@ -126,12 +126,16 @@ constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
+RTC_DATA_ATTR uint8_t imeiRecoveryReboots = 0;
 String rebootRequestReason;
 String rebootRequestDetail;
 
 void queueSystemLog(const String &event, const String &details);
 void maintainSystemLog(bool force);
 void requestReboot(const String &reason, const String &detail, uint32_t delayMs = 250);
+void showBootStatus(const String &step, uint8_t progress, const String &detail);
+bool isPowerCycleReset();
+bool waitForBootImei(uint8_t progress, uint32_t timeoutMs);
 
 struct UpdateState {
   bool available = false;
@@ -1338,6 +1342,58 @@ void requestReboot(const String &reason, const String &detail, uint32_t delayMs)
   rebootRequestDetail = detail;
   SystemRuntime::requestReboot(rebootRequestReason, rebootRequestDetail);
   restartAt = millis() + delayMs;
+}
+
+bool isPowerCycleReset() {
+  esp_reset_reason_t reason = esp_reset_reason();
+  return reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT;
+}
+
+bool waitForBootImei(uint8_t progress, uint32_t timeoutMs) {
+  if (!config.cellularEnabled) {
+    imeiRecoveryReboots = 0;
+    return true;
+  }
+  if (!modem.imei().isEmpty()) {
+    imeiRecoveryReboots = 0;
+    return true;
+  }
+
+  const bool powerCycle = isPowerCycleReset();
+  if (powerCycle && imeiRecoveryReboots == 0) {
+    imeiRecoveryReboots = 1;
+    queueSystemLog("BOOT_IMEI_RETRY",
+                   "progress=" + String(progress) + ",reason=power-cycle,detail=IMEI noch nicht verfuegbar");
+    maintainSystemLog(true);
+    showBootStatus("Mobilfunkmodem", progress, "IMEI fehlt, Neustart");
+    requestReboot("boot-imei", "IMEI nach Stromausfall nicht sofort verfuegbar", 250);
+    uint32_t rebootAt = millis() + 250;
+    while (static_cast<int32_t>(millis() - rebootAt) < 0) {
+      SystemRuntime::kickWatchdog();
+      delay(20);
+    }
+    ESP.restart();
+    return false;
+  }
+
+  uint32_t startedAt = millis();
+  while (millis() - startedAt < timeoutMs) {
+    showBootStatus("Mobilfunkmodem", progress,
+                   powerCycle ? "warte auf IMEI nach Neustart" : "warte auf IMEI");
+    SystemRuntime::kickWatchdog();
+    modem.loop();
+    if (!modem.imei().isEmpty()) {
+      imeiRecoveryReboots = 0;
+      return true;
+    }
+    delay(100);
+  }
+
+  queueSystemLog("BOOT_IMEI_TIMEOUT",
+                 "progress=" + String(progress) + ",detail=IMEI nach Boot nicht verfuegbar");
+  maintainSystemLog(true);
+  imeiRecoveryReboots = 0;
+  return true;
 }
 
 String activeNetworkName() {
@@ -2956,8 +3012,13 @@ void setup() {
   showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
   SystemRuntime::kickWatchdog();
+  if (!waitForBootImei(82, 30000)) {
+    return;
+  }
   showBootStatus("Mobilfunkmodem", 82,
-                 !modem.model().isEmpty() ? modem.model() + " erkannt" : "nicht erkannt");
+                 !config.cellularEnabled ? "deaktiviert"
+                                         : (!modem.model().isEmpty() ? modem.model() + " erkannt"
+                                                                     : "nicht erkannt"));
 
   showBootStatus("Alarmsteuerung", 87, "Daten laden");
   alarmRouter.setProgressCallback(showAlarmProgress);
@@ -2983,8 +3044,10 @@ void setup() {
   bool hadPlannedReboot = SystemRuntime::consumeRebootRequest(plannedRebootReason, plannedRebootDetail);
   String bootDetails = "count=" + String(bootCount) +
                        ",reason=" + String(SystemRuntime::resetReasonName(esp_reset_reason())) +
+                       ",powerCycle=" + String(isPowerCycleReset() ? 1 : 0) +
                        ",firmware=" + BuildInfo::version + ",imei=" + modem.imei() +
                        ",model=" + modem.model();
+  bootDetails += ",imeiRecovery=" + String(imeiRecoveryReboots);
   if (hadPlannedReboot) {
     bootDetails += ",requested=" + plannedRebootReason;
     if (!plannedRebootDetail.isEmpty()) bootDetails += ",requestedDetail=" + plannedRebootDetail;
