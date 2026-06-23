@@ -115,10 +115,6 @@
           </div>
           <div class="fields two">
             <label class="wide"><span>System-ID</span><input id="mqttBaseTopic" type="text" maxlength="128" placeholder="mione"><small>Muss gesetzt sein, wenn MIOne aktiv ist. Ohne Aktivierung bleibt das Feld optional.</small></label>
-            <label><span>Broker / Hostname</span><input id="mqttHost" type="text" maxlength="128" placeholder="mqtt.example.de"></label>
-            <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
-            <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
-            <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
           </div>
           <div class="alarm-routing">
             <div class="routing-head"><div><h4>Alarmconfig aus System</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
@@ -129,6 +125,15 @@
 
         <section class="card" id="services">
           <div class="section-heading"><div><span class="step">04</span><h2>Dienste MQTT</h2><p>Zusätzlicher Topic-Weg für Home Assistant, HEMS und andere Dienste.</p></div></div>
+          <div class="subsection">
+            <div class="subsection-title"><div><h3>MQTT Broker</h3><p>Broker-Daten für den zweiten MQTT-Pfad und die Dienste-Anbindung.</p></div></div>
+            <div class="fields two">
+              <label><span>Broker / Hostname</span><input id="mqttHost" type="text" maxlength="128" placeholder="mqtt.example.de"></label>
+              <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
+              <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
+              <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
+            </div>
+          </div>
           <div class="fields two">
             <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Optionaler zweiter Topic-Weg für separate Datenkopien.</small></label>
           </div>
