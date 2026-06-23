@@ -1,6 +1,7 @@
 #include "ModemService.h"
 
 #include "BoardPins.h"
+#include "SystemRuntime.h"
 #include <SD.h>
 
 namespace {
@@ -214,7 +215,13 @@ bool ModemService::ring(const String &number, uint16_t seconds) {
   serial_.println(';');
   String answer = readUntil(5000);
   if (answer.indexOf("OK") < 0 && answer.indexOf("CONNECT") < 0) return false;
-  delay((seconds > 60 ? 60 : seconds) * 1000UL);
+  uint32_t remaining = (seconds > 60 ? 60 : seconds) * 1000UL;
+  while (remaining > 0) {
+    uint32_t chunk = min<uint32_t>(remaining, 250);
+    delay(chunk);
+    remaining -= chunk;
+    SystemRuntime::kickWatchdog();
+  }
   return command("ATH", "OK", 5000);
 }
 
@@ -233,6 +240,7 @@ bool ModemService::waitFor(const String &token, String &answer, uint32_t timeout
       if (answer.indexOf(token) >= 0) return true;
       if (answer.length() > 512) answer.remove(0, answer.length() - 512);
     }
+    SystemRuntime::kickWatchdog();
     delay(2);
   }
   return false;
@@ -254,6 +262,7 @@ bool ModemService::waitForLine(const String &token, String &answer, uint32_t tim
       if (answer.length() > 512) answer.remove(0, answer.length() - 512);
       if (line.length() > 160) line.remove(0, line.length() - 160);
     }
+    SystemRuntime::kickWatchdog();
     delay(2);
   }
   return false;
@@ -269,6 +278,7 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
   while (written < size && millis() - lastByte < 30000) {
     size_t available = serial_.available();
     if (!available) {
+      SystemRuntime::kickWatchdog();
       delay(2);
       continue;
     }
@@ -282,6 +292,7 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
     }
     written += received;
     lastByte = millis();
+    SystemRuntime::kickWatchdog();
   }
   target.close();
   if (written != size) {
@@ -308,6 +319,7 @@ bool ModemService::refreshImei(uint32_t timeout) {
       imei_ = candidate;
       return true;
     }
+    SystemRuntime::kickWatchdog();
     delay(500);
   }
   return false;
@@ -464,12 +476,13 @@ bool ModemService::downloadSim7500(const String &url, const char *path, String &
     uint32_t lastByte = millis();
     while (read < static_cast<size_t>(chunk) && millis() - lastByte < 30000) {
       size_t available = serial_.available();
-      if (!available) { delay(2); continue; }
+      if (!available) { SystemRuntime::kickWatchdog(); delay(2); continue; }
       size_t count = min<size_t>(min(sizeof(buffer), available), chunk - read);
       size_t received = serial_.readBytes(buffer, count);
       if (!received || target.write(buffer, received) != received) { error = "SIM7500 Daten konnten nicht gespeichert werden"; break; }
       read += received;
       lastByte = millis();
+      SystemRuntime::kickWatchdog();
     }
     if (!error.isEmpty()) break;
     if (!waitForLine("OK", answer, 10000)) { error = "SIM7500 HTTPREAD nicht abgeschlossen"; break; }
@@ -494,6 +507,7 @@ String ModemService::readUntil(uint32_t timeout) {
       lastByte = millis();
     }
     if (answer.indexOf("\r\nOK\r\n") >= 0 || answer.indexOf("\r\nERROR\r\n") >= 0 || answer.indexOf('>') >= 0) break;
+    SystemRuntime::kickWatchdog();
     delay(2);
   }
   return answer;

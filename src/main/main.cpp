@@ -29,6 +29,7 @@
 #include "ConfigStore.h"
 #include "DeviceConfig.h"
 #include "ModemService.h"
+#include "SystemRuntime.h"
 
 namespace {
 class Esp32EthernetServer : public EthernetServer {
@@ -125,8 +126,12 @@ constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
+String rebootRequestReason;
+String rebootRequestDetail;
 
 void queueSystemLog(const String &event, const String &details);
+void maintainSystemLog(bool force);
+void requestReboot(const String &reason, const String &detail, uint32_t delayMs = 250);
 
 struct UpdateState {
   bool available = false;
@@ -511,6 +516,7 @@ bool calculateFileMd5(File &file, String &value, size_t &checkedBytes) {
     if (count <= 0) return false;
     md5.add(buffer, static_cast<uint16_t>(count));
     checkedBytes += static_cast<size_t>(count);
+    SystemRuntime::kickWatchdog();
     delay(0);
   }
   md5.calculate();
@@ -603,6 +609,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
+  request.setTimeout(25000);
   request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!request.begin(tls, url)) {
     error = "Download konnte nicht gestartet werden";
@@ -640,6 +647,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   showUpdateStatus(label, total > 0 ? "0 / " + String(total / 1024) + " KB" : "Verbindung steht", progressFrom);
   while ((request.connected() || stream->available()) &&
          (total < 0 || written < static_cast<size_t>(total))) {
+    SystemRuntime::kickWatchdog();
     size_t available = stream->available();
     if (available) {
       size_t count = min(available, sizeof(buffer));
@@ -659,6 +667,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
       error = "Download-Zeitueberschreitung";
       break;
     } else {
+      SystemRuntime::kickWatchdog();
       delay(10);
     }
     uint8_t percent = total > 0 ? min<uint32_t>(100, written * 100UL / total) : 0;
@@ -775,6 +784,7 @@ bool stageWebPackage(String &error) {
   size_t archiveSize = archive.size();
   showUpdateStatus("Webdateien", "Paket wird entpackt", 72);
   while (archive.available()) {
+    SystemRuntime::kickWatchdog();
     if (archive.read(header, sizeof(header)) != sizeof(header)) { error = "WWW-TAR-Header ist unvollstaendig"; break; }
     bool empty = true;
     for (uint8_t value : header) if (value) { empty = false; break; }
@@ -798,6 +808,7 @@ bool stageWebPackage(String &error) {
         size_t count = archive.read(data, min<size_t>(sizeof(data), remaining));
         if (!count || target.write(data, count) != count) { error = "WWW-Datei konnte nicht entpackt werden"; break; }
         remaining -= count;
+        SystemRuntime::kickWatchdog();
       }
       target.close();
       if (!error.isEmpty()) break;
@@ -979,6 +990,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = image.read(buffer, min(sizeof(buffer), imageSize - offset));
     if (!count || esp_partition_write(factory, offset, buffer, count) != ESP_OK) { image.close(); error = "Recovery konnte nicht geschrieben werden"; return false; }
     offset += count;
+    SystemRuntime::kickWatchdog();
     showUpdateStatus("Recovery schreiben", String(offset / 1024) + " / " + String(imageSize / 1024) + " KB",
                      20 + min<size_t>(5, offset * 5 / imageSize));
   }
@@ -989,6 +1001,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = min(sizeof(buffer), imageSize - offset);
     if (esp_partition_read(factory, offset, buffer, count) != ESP_OK) { error = "Recovery konnte nicht rueckgelesen werden"; return false; }
     verify.add(buffer, count);
+    SystemRuntime::kickWatchdog();
     showUpdateStatus("Recovery pruefen", String((offset + count) / 1024) + " / " + String(imageSize / 1024) + " KB",
                      25 + min<size_t>(4, (offset + count) * 4 / imageSize));
   }
@@ -1149,7 +1162,7 @@ bool prepareApprovedUpdate(String &error) {
   queueSystemLog("UPDATE", "version=" + updateState.version + ",webVersion=" + updateState.webVersion + ",bereit=1");
   updateState.message = "Neustart in Recovery";
   showUpdateStatus("Vorbereitung fertig", "Neustart in Recovery", 95);
-  restartAt = millis() + 1000;
+  requestReboot("update", "Neustart in Recovery", 1000);
   return true;
 }
 
@@ -1318,6 +1331,13 @@ void queueSystemLog(const String &event, const String &details) {
     pendingSystemLog.remove(0, newline + 1);
   }
   pendingSystemLog += line;
+}
+
+void requestReboot(const String &reason, const String &detail, uint32_t delayMs) {
+  rebootRequestReason = reason.isEmpty() ? "manual" : reason;
+  rebootRequestDetail = detail;
+  SystemRuntime::requestReboot(rebootRequestReason, rebootRequestDetail);
+  restartAt = millis() + delayMs;
 }
 
 String activeNetworkName() {
@@ -1518,6 +1538,7 @@ String readSystemLogTail(uint16_t limit, String &error) {
     logFile.seek(startOffset);
     while (logFile.position() < fileSize) {
       if (logFile.read() == '\n') break;
+      SystemRuntime::kickWatchdog();
       delay(0);
     }
   }
@@ -1534,6 +1555,7 @@ String readSystemLogTail(uint16_t limit, String &error) {
     size_t wanted = min(sizeof(buffer), remaining);
     int read = logFile.read(buffer, wanted);
     if (read <= 0) break;
+    SystemRuntime::kickWatchdog();
     for (int i = 0; i < read; ++i) {
       char c = static_cast<char>(buffer[i]);
       if (c == '\r') continue;
@@ -1583,20 +1605,6 @@ String readSystemLogTail(uint16_t limit, String &error) {
     body += '\n';
   }
   return body;
-}
-
-const char *resetReasonName(esp_reset_reason_t reason) {
-  switch (reason) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_SW: return "software";
-    case ESP_RST_PANIC: return "panic";
-    case ESP_RST_INT_WDT: return "interrupt-watchdog";
-    case ESP_RST_TASK_WDT: return "task-watchdog";
-    case ESP_RST_WDT: return "watchdog";
-    case ESP_RST_DEEPSLEEP: return "deep-sleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    default: return "unknown";
-  }
 }
 
 void beginSharedSpi() {
@@ -1733,9 +1741,15 @@ void setupWeb() {
     if (!candidate.fromJson(doc.as<JsonObjectConst>(), error)) return errorResponse(422, error);
     candidate.provisioned = true;
     if (!configStore.save(candidate, error)) return errorResponse(500, error);
+    queueSystemLog("CONFIG_CHANGE", "Konfiguration gespeichert, Neustart geplant");
+    requestReboot("config", "Konfiguration gespeichert", 750);
     web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
-    queueSystemLog("CONFIG", "Konfiguration gespeichert, Neustart geplant");
-    restartAt = millis() + 250;
+  });
+  web.on("/api/system/reboot", HTTP_POST, [] {
+    if (!authorized()) return;
+    queueSystemLog("REBOOT_REQUEST", "reason=manual,detail=Reboot-Button");
+    requestReboot("manual", "Reboot-Button", 500);
+    web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
   });
   web.on("/api/modem/factory-reset", HTTP_POST, [] {
     if (!authorized()) return;
@@ -1746,11 +1760,13 @@ void setupWeb() {
   });
   web.on("/api/system/nvs-reset", HTTP_POST, [] {
     if (!authorized()) return;
+    queueSystemLog("REBOOT_REQUEST", "reason=nvs-reset,detail=NVS geloescht");
+    maintainSystemLog(true);
     web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
     delay(100);
     nvs_flash_erase();
     nvs_flash_init();
-    ESP.restart();
+    requestReboot("nvs-reset", "NVS geloescht", 250);
   });
   web.on("/api/files", HTTP_GET, [] {
     if (!authorized()) return;
@@ -2162,7 +2178,10 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     serializeJson(response, body);
     String resultTopic = root + "/app/config/result";
     publishMqttTopic(resultTopic, body, false);
-    if (applied) restartAt = millis() + 1000;
+    if (applied) {
+      queueSystemLog("CONFIG_CHANGE", "MQTT-Konfiguration gespeichert, Neustart geplant");
+      requestReboot("config", "MQTT-Konfiguration gespeichert", 1000);
+    }
     return;
   }
   return;
@@ -2877,9 +2896,11 @@ void updateDisplay() {
 void setup() {
   Serial.begin(115200);
   delay(100);
+  SystemRuntime::initWatchdog();
   config.setDefaults(chipId());
   String error;
   if (!configStore.begin(config, error)) Serial.println(error);
+  SystemRuntime::kickWatchdog();
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   tzset();
   pinMode(BoardPins::buttonsAdc, INPUT);
@@ -2892,6 +2913,7 @@ void setup() {
   }
   currentButtonAdc = static_cast<int>(buttonSampleSum / 10);
   updateButtonIdle = currentButtonAdc;
+  SystemRuntime::kickWatchdog();
 
   Wire.begin(BoardPins::i2cSda, BoardPins::i2cScl);
   if (config.displayEnabled) {
@@ -2905,40 +2927,48 @@ void setup() {
 
   showBootStatus("Schnittstellen", 15, "SPI starten");
   beginSharedSpi();
+  SystemRuntime::kickWatchdog();
   showBootStatus("SD-Karte", 22, config.sdEnabled ? "wird geprueft" : "deaktiviert");
   beginSd();
+  SystemRuntime::kickWatchdog();
   restoreUpdateManualLock();
   recoverInterruptedWebUpdate();
   showBootStatus("SD-Karte", 30, !config.sdEnabled ? "deaktiviert" : (sdReady ? "bereit" : "FEHLER"));
 
   showBootStatus("WLAN / Hotspot", 37, "wird gestartet");
   beginWifi();
+  SystemRuntime::kickWatchdog();
   showBootStatus("WLAN / Hotspot", 44,
                  accessPoint ? "Hotspot aktiv" : (config.wifiEnabled ? "WLAN gestartet" : "deaktiviert"));
 
   showBootStatus("Ethernet", 51, config.ethernetEnabled ? "wird gestartet" : "deaktiviert");
   beginEthernet();
+  SystemRuntime::kickWatchdog();
   showBootStatus("Ethernet", 58,
                  !config.ethernetEnabled ? "deaktiviert" : (ethernetReady ? "bereit" : "nicht verbunden"));
 
   showBootStatus("Echtzeituhr", 64, "wird geprueft");
   rtcReady = rtc.begin();
   if (rtcReady && rtc.lostPower()) rtc.adjust(DateTime(__DATE__, __TIME__));
+  SystemRuntime::kickWatchdog();
   showBootStatus("Echtzeituhr", 70, rtcReady ? "bereit" : "FEHLER");
 
   showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
+  SystemRuntime::kickWatchdog();
   showBootStatus("Mobilfunkmodem", 82,
                  !modem.model().isEmpty() ? modem.model() + " erkannt" : "nicht erkannt");
 
   showBootStatus("Alarmsteuerung", 87, "Daten laden");
   alarmRouter.setProgressCallback(showAlarmProgress);
   alarmRouter.begin();
+  SystemRuntime::kickWatchdog();
   mqtt.setCallback(onMqtt);
   mqtt.setBufferSize(6144);
   beginOfflineTcp();
   showBootStatus("Webserver", 93, "wird gestartet");
   setupWeb();
+  SystemRuntime::kickWatchdog();
   MDNS.begin(config.deviceId.c_str());
   showBootStatus("System bereit", 100, accessPoint ? "Config-Hotspot aktiv" : "Alarmierung aktiv");
   Preferences logPrefs;
@@ -2948,15 +2978,24 @@ void setup() {
     logPrefs.putULong("bootCount", bootCount);
     logPrefs.end();
   }
-  queueSystemLog("BOOT", "count=" + String(bootCount) +
-                         ",reason=" + String(resetReasonName(esp_reset_reason())) +
-                         ",firmware=" + BuildInfo::version + ",imei=" + modem.imei() +
-                         ",model=" + modem.model());
+  String plannedRebootReason;
+  String plannedRebootDetail;
+  bool hadPlannedReboot = SystemRuntime::consumeRebootRequest(plannedRebootReason, plannedRebootDetail);
+  String bootDetails = "count=" + String(bootCount) +
+                       ",reason=" + String(SystemRuntime::resetReasonName(esp_reset_reason())) +
+                       ",firmware=" + BuildInfo::version + ",imei=" + modem.imei() +
+                       ",model=" + modem.model();
+  if (hadPlannedReboot) {
+    bootDetails += ",requested=" + plannedRebootReason;
+    if (!plannedRebootDetail.isEmpty()) bootDetails += ",requestedDetail=" + plannedRebootDetail;
+  }
+  queueSystemLog("BOOT", bootDetails);
   delay(500);
   Serial.printf("Firmware %s gestartet\n", BuildInfo::version);
 }
 
 void loop() {
+  SystemRuntime::kickWatchdog();
   if (accessPoint) captiveDns.processNextRequest();
   web.handleClient();
   maintainOfflineTcp();
@@ -2975,7 +3014,9 @@ void loop() {
   updateDisplay();
   maintainSystemLog();
   if (restartAt && static_cast<int32_t>(millis() - restartAt) >= 0) {
-    queueSystemLog("REBOOT", "Geplanter Neustart");
+    String reason = rebootRequestReason.isEmpty() ? "manual" : rebootRequestReason;
+    String detail = rebootRequestDetail.isEmpty() ? "Geplanter Neustart" : rebootRequestDetail;
+    queueSystemLog("REBOOT", "reason=" + reason + ",detail=" + detail);
     maintainSystemLog(true);
     ESP.restart();
   }
