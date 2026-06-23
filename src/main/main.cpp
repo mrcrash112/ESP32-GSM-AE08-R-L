@@ -188,6 +188,7 @@ bool appBridgeIsOnline();
 bool mqttConnectedAny();
 bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
+bool validMioneHeartbeat();
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress);
 
@@ -1454,8 +1455,10 @@ void publishDigitalInputsStatus(bool retain = true) {
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/inputs/status", body, retain);
-  String topicRoot = mioneTopicRoot();
-  if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/InputStatus", body, retain);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/InputStatus", body, retain);
+  }
   String serviceRoot = serviceMqttRoot();
   if (!serviceRoot.isEmpty()) publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/inputs/status", body, retain);
 }
@@ -1766,6 +1769,14 @@ void setupWeb() {
     appBridge["source"] = appBridgeSource;
     appBridge["message"] = appBridgeMessage;
     appBridge["ageSeconds"] = appBridgeLastSeenAt ? static_cast<int32_t>((millis() - appBridgeLastSeenAt) / 1000UL) : -1;
+    JsonObject mioneSystem = doc.createNestedObject("mioneSystem");
+    mioneSystem["enabled"] = config.mqttEnabled;
+    mioneSystem["systemId"] = config.mqttBaseTopic;
+    mioneSystem["modemTopic"] = mqttDeviceRoot();
+    mioneSystem["statusTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/ModemStatus" : "";
+    mioneSystem["heartbeatTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/Heartbeat" : "";
+    mioneSystem["heartbeatOnline"] = config.mqttEnabled && validMioneHeartbeat();
+    mioneSystem["subscriptionReady"] = mqttMobileSubscriptionReady;
     JsonObject logging = doc.createNestedObject("logging");
     logging["intervalSeconds"] = config.logIntervalSeconds;
     logging["pendingBytes"] = pendingSystemLog.length();
@@ -1782,6 +1793,7 @@ void setupWeb() {
     if (!authorized()) return;
     DynamicJsonDocument doc(2560);
     alarmRouter.toJson(doc.to<JsonObject>());
+    doc["systemEnabled"] = config.mqttEnabled;
     doc["subscriptionReady"] = mqttMobileSubscriptionReady;
     doc["lastReceivedMs"] = mqttMobileReceivedAt;
     doc["syncMessage"] = mqttMobileSyncMessage;
@@ -2539,10 +2551,12 @@ void publishMioneStatus(bool force) {
   String body = mioneStatusBody();
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/status", body, true);
-  String topicRoot = mioneTopicRoot();
-  if (!topicRoot.isEmpty()) {
-    String topic = topicRoot + "/ModemStatus";
-    publishMqttTopic(topic, body, true);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) {
+      String topic = topicRoot + "/ModemStatus";
+      publishMqttTopic(topic, body, true);
+    }
   }
   String serviceRoot = serviceMqttRoot();
   if (!serviceRoot.isEmpty()) {
@@ -2790,10 +2804,12 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 
 void sendAlarmProgress(const String &body) {
   if (!config.alarmProgressEnabled) return;
-  String topicRoot = mioneTopicRoot();
-  if (mqttConnectedAny() && !topicRoot.isEmpty()) {
-    String topic = topicRoot + "/AlarmStatus";
-    publishMqttTopic(topic, body, false);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (mqttConnectedAny() && !topicRoot.isEmpty()) {
+      String topic = topicRoot + "/AlarmStatus";
+      publishMqttTopic(topic, body, false);
+    }
   }
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
 }
