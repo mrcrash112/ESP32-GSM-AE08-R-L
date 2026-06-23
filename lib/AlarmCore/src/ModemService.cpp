@@ -57,6 +57,14 @@ String mqttSafe(String value) {
   value.replace("\n", " ");
   return value;
 }
+
+String detectModemType(const String &answer) {
+  String detected = answer;
+  detected.toUpperCase();
+  if (detected.indexOf("EC25") >= 0) return "EC25";
+  if (detected.indexOf("SIM7500") >= 0) return "SIM7500";
+  return "";
+}
 }  // namespace
 
 void ModemService::begin(const DeviceConfig &config) {
@@ -70,19 +78,24 @@ void ModemService::begin(const DeviceConfig &config) {
   serial_.setRxBufferSize(16384);
   serial_.begin(BoardPins::modemBaud, SERIAL_8N1, BoardPins::modemRx, BoardPins::modemTx);
   serial_.setTimeout(3000);
-  delay(200);
-  command("AT", "OK", 1000);
-  command("ATE0", "OK", 1000);
-  command("AT+CMGF=1", "OK", 1000);
-  serial_.println("ATI");
-  modemName_ = readUntil(1500);
-  modemName_.replace("\r", " ");
-  modemName_.replace("\n", " ");
-  String detectedName = modemName_;
-  detectedName.toUpperCase();
-  if (detectedName.indexOf("EC25") >= 0) modemType_ = "EC25";
-  else if (detectedName.indexOf("SIM7500") >= 0) modemType_ = "SIM7500";
-  else modemType_ = "";
+  uint32_t startedAt = millis();
+  while (modemType_.isEmpty() && millis() - startedAt < 20000) {
+    if (!command("AT", "OK", 1000)) {
+      delay(250);
+      SystemRuntime::kickWatchdog();
+      continue;
+    }
+    command("ATE0", "OK", 1000);
+    command("AT+CMGF=1", "OK", 1000);
+    serial_.println("ATI");
+    modemName_ = readUntil(1500);
+    modemName_.replace("\r", " ");
+    modemName_.replace("\n", " ");
+    modemType_ = detectModemType(modemName_);
+    if (!modemType_.isEmpty()) break;
+    delay(500);
+    SystemRuntime::kickWatchdog();
+  }
   refreshImei(2000);
   pollStatus();
 }
@@ -307,10 +320,21 @@ bool ModemService::readBinaryToFile(const char *path, size_t size, String &error
 }
 
 bool ModemService::refreshImei(uint32_t timeout) {
-  if (!enabled_ || modemType_.isEmpty()) return false;
+  if (!enabled_) return false;
   if (!imei_.isEmpty()) return true;
   if (lastImeiAttempt_ != 0 && millis() - lastImeiAttempt_ < 5000) return false;
   lastImeiAttempt_ = millis();
+  if (modemType_.isEmpty()) {
+    if (!command("AT", "OK", timeout)) return false;
+    serial_.println("ATI");
+    modemName_ = readUntil(timeout);
+    modemName_.replace("\r", " ");
+    modemName_.replace("\n", " ");
+    modemType_ = detectModemType(modemName_);
+    if (modemType_.isEmpty()) return false;
+    command("ATE0", "OK", 1000);
+    command("AT+CMGF=1", "OK", 1000);
+  }
   for (uint8_t attempt = 0; attempt < 3 && imei_.isEmpty(); ++attempt) {
     while (serial_.available()) serial_.read();
     serial_.println("AT+GSN");
@@ -516,6 +540,10 @@ String ModemService::readUntil(uint32_t timeout) {
 
 void ModemService::pollStatus() {
   lastPoll_ = millis();
+  if (modemType_.isEmpty()) {
+    refreshImei();
+    if (modemType_.isEmpty()) return;
+  }
   if (imei_.isEmpty()) refreshImei();
   serial_.println("AT+CSQ");
   String csq = readUntil(1500);

@@ -1392,6 +1392,21 @@ bool waitForBootImei(uint8_t progress, uint32_t timeoutMs) {
   queueSystemLog("BOOT_IMEI_TIMEOUT",
                  "progress=" + String(progress) + ",detail=IMEI nach Boot nicht verfuegbar");
   maintainSystemLog(true);
+  if (imeiRecoveryReboots < 3) {
+    ++imeiRecoveryReboots;
+    queueSystemLog("BOOT_IMEI_REBOOT",
+                   "progress=" + String(progress) + ",attempt=" + String(imeiRecoveryReboots) +
+                       ",detail=IMEI weiterhin nicht verfuegbar");
+    maintainSystemLog(true);
+    requestReboot("boot-imei", "IMEI weiterhin nicht verfuegbar", 250);
+    uint32_t rebootAt = millis() + 250;
+    while (static_cast<int32_t>(millis() - rebootAt) < 0) {
+      SystemRuntime::kickWatchdog();
+      delay(20);
+    }
+    ESP.restart();
+    return false;
+  }
   imeiRecoveryReboots = 0;
   return true;
 }
