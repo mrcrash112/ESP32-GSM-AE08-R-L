@@ -73,31 +73,44 @@ void ModemService::begin(const DeviceConfig &config) {
   apnUser_ = config.apnUser;
   apnPassword_ = config.apnPassword;
   if (!enabled_) return;
-  pinMode(BoardPins::modemReset, OUTPUT);
-  digitalWrite(BoardPins::modemReset, HIGH);
   serial_.setRxBufferSize(16384);
   serial_.begin(BoardPins::modemBaud, SERIAL_8N1, BoardPins::modemRx, BoardPins::modemTx);
-  serial_.setTimeout(3000);
-  uint32_t startedAt = millis();
-  while (modemType_.isEmpty() && millis() - startedAt < 20000) {
-    if (!command("AT", "OK", 1000)) {
-      delay(250);
-      SystemRuntime::kickWatchdog();
-      continue;
-    }
-    command("ATE0", "OK", 1000);
-    command("AT+CMGF=1", "OK", 1000);
-    serial_.println("ATI");
-    modemName_ = readUntil(1500);
-    modemName_.replace("\r", " ");
-    modemName_.replace("\n", " ");
-    modemType_ = detectModemType(modemName_);
-    if (!modemType_.isEmpty()) break;
-    delay(500);
-    SystemRuntime::kickWatchdog();
-  }
-  refreshImei(2000);
-  pollStatus();
+  serial_.setTimeout(1000);
+  registered_ = false;
+  packetDataConnected_ = false;
+  mqttConnected_ = false;
+  simMqttStarted_ = false;
+  signalQuality_ = -1;
+  modemName_ = "";
+  imei_ = "";
+  modemType_ = "";
+  networkOperator_ = "";
+  lastPoll_ = 0;
+  lastImeiAttempt_ = 0;
+  lastDataAttempt_ = 0;
+  while (serial_.available()) serial_.read();
+}
+
+void ModemService::resetHardware() {
+  if (!enabled_) return;
+  registered_ = false;
+  packetDataConnected_ = false;
+  mqttConnected_ = false;
+  simMqttStarted_ = false;
+  signalQuality_ = -1;
+  modemName_ = "";
+  imei_ = "";
+  modemType_ = "";
+  networkOperator_ = "";
+  lastPoll_ = 0;
+  lastImeiAttempt_ = 0;
+  lastDataAttempt_ = 0;
+  while (serial_.available()) serial_.read();
+  pinMode(BoardPins::modemReset, OUTPUT);
+  digitalWrite(BoardPins::modemReset, LOW);
+  delay(1000);
+  digitalWrite(BoardPins::modemReset, HIGH);
+  delay(6000);
 }
 
 void ModemService::maintainDataFallback(bool required) {

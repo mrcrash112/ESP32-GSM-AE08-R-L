@@ -26,6 +26,7 @@ class ModemService {
   String model() const { return modemType_; }
   String imei() const { return imei_; }
   String networkOperator() const { return networkOperator_; }
+  void resetHardware();
 
  private:
   bool command(const String &value, const char *expected, uint32_t timeout = 2000);

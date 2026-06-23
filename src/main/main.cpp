@@ -80,6 +80,9 @@ String mqttConnectionTransport;
 bool mqttMobileSubscriptionReady = false;
 uint32_t mqttMobileReceivedAt = 0;
 String mqttMobileSyncMessage = "Noch keine Mobile-Konfiguration empfangen";
+uint32_t appBridgeLastSeenAt = 0;
+String appBridgeSource = "The_App";
+String appBridgeMessage = "Noch kein App-/Bridge-Signal empfangen";
 uint32_t mioneHeartbeatReceivedAt = 0;
 bool mioneHeartbeatValue = false;
 String mioneHeartbeatImei;
@@ -129,6 +132,8 @@ constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
 RTC_DATA_ATTR uint8_t imeiRecoveryReboots = 0;
 String rebootRequestReason;
 String rebootRequestDetail;
+bool bootImeiRecoveryPending = false;
+uint32_t bootImeiRecoveryLastAttemptAt = 0;
 
 void queueSystemLog(const String &event, const String &details);
 void maintainSystemLog(bool force);
@@ -136,6 +141,7 @@ void requestReboot(const String &reason, const String &detail, uint32_t delayMs 
 void showBootStatus(const String &step, uint8_t progress, const String &detail);
 bool isPowerCycleReset();
 bool waitForBootImei(uint8_t progress, uint32_t timeoutMs);
+void maintainBootImeiRecovery();
 
 struct UpdateState {
   bool available = false;
@@ -177,6 +183,8 @@ void cleanupUpdateAttemptFiles();
 String mqttDeviceRoot();
 String mioneTopicRoot();
 String mioneConfigRoot();
+String serviceMqttRoot();
+bool appBridgeIsOnline();
 bool mqttConnectedAny();
 bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
@@ -1352,63 +1360,59 @@ bool isPowerCycleReset() {
 bool waitForBootImei(uint8_t progress, uint32_t timeoutMs) {
   if (!config.cellularEnabled) {
     imeiRecoveryReboots = 0;
+    bootImeiRecoveryPending = false;
     return true;
   }
   if (!modem.imei().isEmpty()) {
     imeiRecoveryReboots = 0;
+    bootImeiRecoveryPending = false;
     return true;
   }
 
   const bool powerCycle = isPowerCycleReset();
-  if (powerCycle && imeiRecoveryReboots == 0) {
-    imeiRecoveryReboots = 1;
-    queueSystemLog("BOOT_IMEI_RETRY",
-                   "progress=" + String(progress) + ",reason=power-cycle,detail=IMEI noch nicht verfuegbar");
-    maintainSystemLog(true);
-    showBootStatus("Mobilfunkmodem", progress, "IMEI fehlt, Neustart");
-    requestReboot("boot-imei", "IMEI nach Stromausfall nicht sofort verfuegbar", 250);
-    uint32_t rebootAt = millis() + 250;
-    while (static_cast<int32_t>(millis() - rebootAt) < 0) {
-      SystemRuntime::kickWatchdog();
-      delay(20);
-    }
-    ESP.restart();
-    return false;
-  }
-
   uint32_t startedAt = millis();
   while (millis() - startedAt < timeoutMs) {
     showBootStatus("Mobilfunkmodem", progress,
-                   powerCycle ? "warte auf IMEI nach Neustart" : "warte auf IMEI");
+                   powerCycle ? "warte auf IMEI nach Modem-Reset" : "warte auf IMEI");
     SystemRuntime::kickWatchdog();
-    modem.loop();
     if (!modem.imei().isEmpty()) {
       imeiRecoveryReboots = 0;
+      bootImeiRecoveryPending = false;
       return true;
     }
+    modem.loop();
     delay(100);
   }
 
-  queueSystemLog("BOOT_IMEI_TIMEOUT",
-                 "progress=" + String(progress) + ",detail=IMEI nach Boot nicht verfuegbar");
+  queueSystemLog("BOOT_IMEI_PENDING",
+                 "progress=" + String(progress) + ",reason=" + (powerCycle ? "power-cycle" : "imei-missing"));
   maintainSystemLog(true);
-  if (imeiRecoveryReboots < 3) {
-    ++imeiRecoveryReboots;
-    queueSystemLog("BOOT_IMEI_REBOOT",
-                   "progress=" + String(progress) + ",attempt=" + String(imeiRecoveryReboots) +
-                       ",detail=IMEI weiterhin nicht verfuegbar");
-    maintainSystemLog(true);
-    requestReboot("boot-imei", "IMEI weiterhin nicht verfuegbar", 250);
-    uint32_t rebootAt = millis() + 250;
-    while (static_cast<int32_t>(millis() - rebootAt) < 0) {
-      SystemRuntime::kickWatchdog();
-      delay(20);
-    }
-    ESP.restart();
-    return false;
-  }
   imeiRecoveryReboots = 0;
+  bootImeiRecoveryPending = true;
+  bootImeiRecoveryLastAttemptAt = millis();
   return true;
+}
+
+void maintainBootImeiRecovery() {
+  if (!bootImeiRecoveryPending || !config.cellularEnabled) return;
+  if (!modem.imei().isEmpty()) {
+    bootImeiRecoveryPending = false;
+    queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
+    maintainSystemLog(true);
+    return;
+  }
+  if (millis() - bootImeiRecoveryLastAttemptAt < 30000) return;
+  bootImeiRecoveryLastAttemptAt = millis();
+  queueSystemLog("BOOT_IMEI_BACKGROUND_RETRY", "detail=IMEI weiterhin nicht verfuegbar");
+  maintainSystemLog(true);
+  modem.resetHardware();
+  modem.begin(config);
+  modem.loop();
+  if (!modem.imei().isEmpty()) {
+    bootImeiRecoveryPending = false;
+    queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
+    maintainSystemLog(true);
+  }
 }
 
 String activeNetworkName() {
@@ -1452,6 +1456,8 @@ void publishDigitalInputsStatus(bool retain = true) {
   if (!root.isEmpty()) publishMqttTopic(root + "/inputs/status", body, retain);
   String topicRoot = mioneTopicRoot();
   if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/InputStatus", body, retain);
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/inputs/status", body, retain);
 }
 
 void sendInputAlarm(uint8_t index) {
@@ -1755,6 +1761,11 @@ void setupWeb() {
     mqttConnection["message"] = mqttConnectionMessage;
     mqttConnection["transport"] = mqttConnectionTransport;
     mqttConnection["lastAttemptMs"] = lastMqttAttempt;
+    JsonObject appBridge = doc.createNestedObject("appBridge");
+    appBridge["online"] = appBridgeIsOnline();
+    appBridge["source"] = appBridgeSource;
+    appBridge["message"] = appBridgeMessage;
+    appBridge["ageSeconds"] = appBridgeLastSeenAt ? static_cast<int32_t>((millis() - appBridgeLastSeenAt) / 1000UL) : -1;
     JsonObject logging = doc.createNestedObject("logging");
     logging["intervalSeconds"] = config.logIntervalSeconds;
     logging["pendingBytes"] = pendingSystemLog.length();
@@ -2014,6 +2025,23 @@ String mioneConfigRoot() {
   return root + "/config";
 }
 
+String serviceMqttRoot() {
+  String root = config.mqttTopTopic;
+  root.trim();
+  return root;
+}
+
+bool appBridgeIsOnline() {
+  return appBridgeLastSeenAt != 0 && millis() - appBridgeLastSeenAt <= 120000UL;
+}
+
+void touchAppBridgeStatus(const String &source, const String &message, bool online = true) {
+  if (!source.isEmpty()) appBridgeSource = source;
+  appBridgeMessage = message;
+  appBridgeLastSeenAt = millis();
+  if (!online) appBridgeLastSeenAt = millis() - 120001UL;
+}
+
 bool mqttIdentityValid(JsonObjectConst input) {
   String imei = input["imei"] | "";
   String secret = input["secret"] | "";
@@ -2096,6 +2124,31 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
   String root = mqttDeviceRoot();
   String mioneRoot = mioneConfigRoot();
   String mioneTopic = mioneTopicRoot();
+  if (!root.isEmpty() && (incoming.startsWith(root + "/app/") || incoming.startsWith(root + "/bridge/"))) {
+    String source = incoming.startsWith(root + "/bridge/") ? "Bridge" : "The_App";
+    if (incoming.endsWith("/status")) {
+      DynamicJsonDocument status(512);
+      DeserializationError parsed = deserializeJson(status, payload, length);
+      if (!parsed && status.is<JsonObjectConst>()) {
+        JsonObjectConst payloadStatus = status.as<JsonObjectConst>();
+        bool online = payloadStatus["online"] | true;
+        String label = payloadStatus["source"] | payloadStatus["name"] | payloadStatus["client"] | source;
+        String message = payloadStatus["message"] | "";
+        if (message.isEmpty()) message = online ? "online" : "offline";
+        touchAppBridgeStatus(label, message, online);
+      } else {
+        String message;
+        message.reserve(length);
+        for (unsigned int i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
+        message.trim();
+        message.toLowerCase();
+        bool online = !(message == "0" || message == "false" || message == "offline" || message == "aus");
+        touchAppBridgeStatus(source, online ? "online" : "offline", online);
+      }
+    } else {
+      touchAppBridgeStatus(source, "MQTT-Aktivitaet erkannt", true);
+    }
+  }
   String mioneHeartbeatTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Heartbeat";
   String mioneImeiTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Config/Mobile/modemImei";
   if (!mioneTopic.isEmpty() && incoming == mioneImeiTopic) {
@@ -2315,7 +2368,8 @@ void maintainMqtt() {
   if ((wifiUp || ethernetUp) && modem.mqttConnected()) modem.mqttDisconnect();
   if (mqtt.connected()) {
     mqttConnectWindowStartedAt = 0;
-    String transport = ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "WLAN";
+    String transport = WiFi.status() == WL_CONNECTED ? "WLAN" :
+                      (ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "Mobilfunk");
     if (mqtt.loop()) {
       setMqttConnectionStatus(MQTT_CONNECTED,
                               config.mqttEnabled ? "Mit dem MQTT-Broker verbunden" :
@@ -2386,9 +2440,9 @@ void maintainMqtt() {
   }
   if (millis() - lastMqttAttempt < 10000) return;
   lastMqttAttempt = millis();
-  String transport = ethernetUp ? "Ethernet" : "WLAN";
-  if (ethernetUp) mqtt.setClient(ethernetClient);
-  else mqtt.setClient(wifiClient);
+  String transport = wifiUp ? "WLAN" : "Ethernet";
+  if (wifiUp) mqtt.setClient(wifiClient);
+  else mqtt.setClient(ethernetClient);
   mqtt.setServer(config.mqttHost.c_str(), config.mqttPort);
   String willTopic = root + "/status";
   String clientId = config.deviceId + "-" + modem.imei().substring(9);
@@ -2489,6 +2543,10 @@ void publishMioneStatus(bool force) {
   if (!topicRoot.isEmpty()) {
     String topic = topicRoot + "/ModemStatus";
     publishMqttTopic(topic, body, true);
+  }
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) {
+    publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/ModemStatus", body, true);
   }
 }
 
@@ -3027,7 +3085,7 @@ void setup() {
   showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
   SystemRuntime::kickWatchdog();
-  if (!waitForBootImei(82, 30000)) {
+  if (!waitForBootImei(82, 1500)) {
     return;
   }
   showBootStatus("Mobilfunkmodem", 82,
@@ -3079,6 +3137,7 @@ void loop() {
   maintainOfflineTcp();
   maintainDigitalInputs();
   modem.loop();
+  maintainBootImeiRecovery();
   bool primaryNetwork = WiFi.status() == WL_CONNECTED ||
                         (ethernetReady && Ethernet.linkStatus() == LinkON);
   modem.maintainDataFallback(!primaryNetwork && millis() > 30000);

@@ -25,6 +25,21 @@ bool validIp(const String &value) {
   return parsed.fromString(value);
 }
 
+bool validSystemId(const String &value) {
+  if (value.isEmpty()) return false;
+  if (value.indexOf('/') >= 0) return false;
+  if (value.indexOf('#') >= 0 || value.indexOf('+') >= 0) return false;
+  return true;
+}
+
+bool validMqttTopicRoot(const String &value) {
+  if (value.isEmpty()) return true;
+  if (value.startsWith("/") || value.endsWith("/")) return false;
+  if (value.indexOf('#') >= 0 || value.indexOf('+') >= 0) return false;
+  if (value.indexOf("//") >= 0) return false;
+  return true;
+}
+
 bool safeAtValue(const String &value) {
   return value.indexOf('"') < 0 && value.indexOf('\r') < 0 && value.indexOf('\n') < 0;
 }
@@ -57,6 +72,10 @@ void DeviceConfig::setDefaults(const String &chipId) {
   deviceId = "alarm-" + chipId;
   webPassword = chipId;
   commandSecret = chipId;
+  mqttHost = "194.164.51.139";
+  mqttPort = 1883;
+  mqttUser = "mqtt_master_key";
+  mqttPassword = "dyjpaz-xakfip-1guwdI";
   updateManifestUrl = "https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/latest/download/firmware.json";
 }
 
@@ -97,6 +116,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   mqtt["user"] = mqttUser;
   secret(mqtt, "password", mqttPassword, includeSecrets);
   mqtt["baseTopic"] = mqttBaseTopic;
+  mqtt["topTopic"] = mqttTopTopic;
 
   JsonObject tcp = root.createNestedObject("offlineTcp");
   tcp["enabled"] = offlineTcpEnabled;
@@ -175,6 +195,8 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   if (mqtt["password"].is<const char *>() && mqtt["password"] != "***") mqttPassword = mqtt["password"].as<String>();
   mqttBaseTopic = mqtt["baseTopic"] | mqttBaseTopic;
   mqttBaseTopic.trim();
+  mqttTopTopic = mqtt["topTopic"] | mqttTopTopic;
+  mqttTopTopic.trim();
 
   JsonObjectConst tcp = root["offlineTcp"];
   offlineTcpEnabled = tcp["enabled"] | offlineTcpEnabled;
@@ -236,8 +258,8 @@ bool DeviceConfig::validate(String &error) const {
   else if (!ethernetIp.dhcp && (!validIp(ethernetIp.address) || !validIp(ethernetIp.gateway) || !validIp(ethernetIp.subnet))) error = "Statische Ethernet-IP ist ungueltig";
   else if (mqttEnabled && (!mqttHost.isEmpty() && mqttPort == 0)) error = "MQTT-Port ist ungueltig";
   else if (mqttUser.indexOf('#') >= 0 || mqttUser.indexOf('+') >= 0 || mqttUser.indexOf('/') >= 0) error = "MQTT-Benutzername darf keine Topic-Sonderzeichen enthalten";
-  else if (mqttEnabled && mqttBaseTopic.isEmpty()) error = "System-ID fehlt";
-  else if (mqttBaseTopic.indexOf('#') >= 0 || mqttBaseTopic.indexOf('+') >= 0 || mqttBaseTopic.indexOf('/') >= 0) error = "System-ID darf keine Topic-Sonderzeichen enthalten";
+  else if (mqttEnabled && !validSystemId(mqttBaseTopic)) error = "System-ID fehlt oder ist ungueltig";
+  else if (!validMqttTopicRoot(mqttTopTopic)) error = "TopTopic darf keine Topic-Sonderzeichen enthalten";
   else if (offlineTcpEnabled && offlineTcpPort == 0) error = "Offline-TCP-Port fehlt";
   else if (!safeAtValue(apn) || !safeAtValue(apnUser) || !safeAtValue(apnPassword)) error = "Mobilfunk-Zugangsdaten enthalten ungueltige Zeichen";
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";

@@ -16,7 +16,7 @@
         <h1>Mione Alarmmelder</h1>
         <p>Gerätekonfiguration und Systemstatus</p>
       </div>
-      <div class="connection" id="connectionState"><i></i><span>Verbindung wird geprüft</span></div>
+      <div class="connection" id="connectionState"><i></i><div class="connection-text"><span>Verbindung wird geprüft</span><small id="connectionDetail">–</small></div></div>
     </div>
   </header>
 
@@ -46,7 +46,8 @@
           <div class="status-item"><span>WLAN-IP</span><strong id="wifiStatus">–</strong></div>
           <div class="status-item"><span>Ethernet-IP</span><strong id="ethernetStatus">–</strong></div>
           <div class="status-item"><span>Mobilfunk</span><strong id="cellularStatus">–</strong></div>
-          <div class="status-item"><span>MQTT</span><strong id="mqttStatus">–</strong></div>
+          <div class="status-item"><span>System MQTT</span><strong id="mqttStatus">–</strong></div>
+          <div class="status-item"><span>The_App / Bridge</span><strong id="appBridgeStatus">–</strong></div>
           <div class="status-item"><span>Firmware</span><strong id="firmwareVersionStatus">–</strong></div>
           <div class="status-item"><span>Datum und Uhrzeit</span><strong id="dateTimeStatus">–</strong></div>
           <div class="status-item"><span>Internetweg</span><strong id="internetStatus">–</strong></div>
@@ -103,11 +104,11 @@
         </section>
 
         <section class="card" id="services">
-          <div class="section-heading"><div><span class="step">03</span><h2>Dienste</h2><p>MQTT-Anbindung und TCP-Socket Direktverbindung.</p></div></div>
+          <div class="section-heading"><div><span class="step">03</span><h2>Dienste</h2><p>System-MQTT, Dienste-MQTT und TCP-Socket Direktverbindung.</p></div></div>
           <div class="subsection" data-feature="mqtt">
-            <div class="subsection-title"><div><h3>MQTT</h3><p>Kommunikation mit Mione und dem zentralen Broker.</p></div><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
+            <div class="subsection-title"><div><h3>System MQTT</h3><p>System-ID und Broker für Modem- und Alarmfunktionen.</p></div><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="mqtt-connection waiting" id="mqttConnection">
-              <i></i><div><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
+              <i></i><div class="connection-text"><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
             </div>
             <div class="mione-live-grid">
               <div class="mione-live waiting" id="heartbeatStatus"><i></i><div><span>MiOne Heartbeat</span><strong id="heartbeatTitle">Warte auf Signal</strong><small id="heartbeatMessage">–</small></div></div>
@@ -120,8 +121,14 @@
               <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
               <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
             </div>
+            <div class="subsection">
+              <div class="subsection-title"><div><h3>Dienste MQTT</h3><p>Zusätzlicher Topic-Weg für Home Assistant, HEMS und andere Dienste.</p></div></div>
+              <div class="fields two">
+                <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Optionaler zweiter Topic-Weg für separate Datenkopien.</small></label>
+              </div>
+            </div>
             <div class="alarm-routing">
-              <div class="routing-head"><div><h4>Alarmempfänger aus MiOne</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
+              <div class="routing-head"><div><h4>Alarmconfig aus System</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
               <div class="routing-sync" id="routingSync"><i></i><span><b>Synchronisierung wird geprüft</b><small id="routingSyncMessage">–</small></span></div>
               <div class="mobile-slots" id="mobileSlots"><p class="empty">Mobilfunknummern werden geladen …</p></div>
             </div>

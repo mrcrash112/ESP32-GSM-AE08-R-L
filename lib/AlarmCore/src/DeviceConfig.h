@@ -53,6 +53,7 @@ struct DeviceConfig {
   String mqttUser;
   String mqttPassword;
   String mqttBaseTopic = "mione";
+  String mqttTopTopic;
 
   bool offlineTcpEnabled = false;
   String offlineTcpHost;
