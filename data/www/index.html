@@ -57,7 +57,7 @@
 
       <form id="configForm" autocomplete="off">
         <section class="card" id="network">
-          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN, Ethernet und den mDNS-Namen konfigurieren.</p></div></div>
+          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN, Ethernet und den Hostnamen für das lokale Netz konfigurieren.</p></div></div>
 
           <div class="subsection" data-feature="wifi">
             <div class="subsection-title"><div><h3>WLAN</h3><p>Drahtloses Netzwerk für Webserver und MQTT.</p></div><label class="switch"><input id="wifiEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
@@ -77,6 +77,13 @@
             </div>
           </div>
 
+          <div class="subsection">
+            <div class="subsection-title"><div><h3>Hostname</h3><p>Der Name wird im Netz als <code>.local</code>-Adresse veröffentlicht.</p></div></div>
+            <div class="fields two">
+              <label class="wide"><span>Hostname / mDNS-Name</span><input id="mdnsName" type="text" maxlength="63" placeholder="alarm-12345678"><small>Ohne <code>.local</code>. Erlaubt sind Buchstaben, Zahlen und Bindestriche.</small></label>
+            </div>
+          </div>
+
           <div class="subsection" data-feature="ethernet">
             <div class="subsection-title"><div><h3>Ethernet</h3><p>W5500-Netzwerkanschluss konfigurieren.</p></div><label class="switch"><input id="ethernetEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="choice-row" role="radiogroup" aria-label="Ethernet IP-Konfiguration">
@@ -88,13 +95,6 @@
               <label><span>Gateway</span><input id="ethernetGateway" inputmode="decimal" placeholder="192.168.1.1"></label>
               <label><span>Subnetzmaske</span><input id="ethernetSubnet" inputmode="decimal" placeholder="255.255.255.0"></label>
               <label><span>DNS-Server</span><input id="ethernetDns" inputmode="decimal" placeholder="1.1.1.1"></label>
-            </div>
-          </div>
-
-          <div class="subsection">
-            <div class="subsection-title"><div><h3>mDNS</h3><p>Der Name wird im lokalen Netz als <code>.local</code>-Adresse veröffentlicht.</p></div></div>
-            <div class="fields two">
-              <label class="wide"><span>mDNS-Name</span><input id="mdnsName" type="text" maxlength="63" placeholder="alarm-12345678"><small>Ohne <code>.local</code>. Erlaubt sind Buchstaben, Zahlen und Bindestriche.</small></label>
             </div>
           </div>
         </section>
@@ -113,10 +113,10 @@
 
         <section class="card" id="mione" data-feature="mqtt">
           <div class="section-heading"><div><span class="step">03</span><h2>MIOne Anbindung</h2><p>System-ID, ModemStatus und Alarmconfig aus dem System.</p></div></div>
+          <div class="section-switch-row mione"><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
           <div class="mqtt-connection waiting" id="mqttConnection">
             <i></i><div class="connection-text"><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
           </div>
-          <div class="section-switch-row"><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
           <div class="mione-live-grid">
             <div class="mione-live waiting" id="heartbeatStatus"><i></i><div><span>MiOne Heartbeat</span><strong id="heartbeatTitle">Warte auf Signal</strong><small id="heartbeatMessage">–</small></div></div>
             <div class="mione-live waiting" id="imeiMatchStatus"><i></i><div><span>IMEI-Abgleich</span><strong id="imeiMatchTitle">Warte auf Konfiguration</strong><small id="imeiMatchMessage">–</small></div></div>
