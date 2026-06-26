@@ -72,6 +72,7 @@ uint32_t lastMqttAttempt = 0;
 uint32_t mqttConnectWindowStartedAt = 0;
 uint32_t lastCellularMqttErrorAt = 0;
 uint32_t lastMioneStatusPublish = 0;
+uint32_t lastMioneConfigPublish = 0;
 uint32_t lastSocketStatusPublish = 0;
 uint32_t mioneStatusSequence = 0;
 int mqttConnectionCode = -1;
@@ -188,7 +189,10 @@ bool appBridgeIsOnline();
 bool mqttConnectedAny();
 bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
+void publishMioneConfig(bool force = false);
 bool validMioneHeartbeat();
+void publishAlarmMonitoring(const String &alarmCode, const String &alarmText, const String &source,
+                            const String &delivery, bool mqttOnly);
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress);
 
@@ -1470,8 +1474,14 @@ void sendInputAlarm(uint8_t index) {
   String text = settings.text;
   text.trim();
   if (text.isEmpty()) text = "Alarm Digitaleingang " + String(index + 1);
-  queueSystemLog("INPUT_ALARM", "input=" + String(index + 1) + ",state=" +
-                                (digitalInputClosed[index] ? "closed" : "open"));
+  bool mqttOnly = !modem.alarmDeliveryAvailable();
+  queueSystemLog(mqttOnly ? "INPUT_ALARM_MQTT_ONLY" : "INPUT_ALARM",
+                 "input=" + String(index + 1) + ",state=" +
+                 (digitalInputClosed[index] ? "closed" : "open") +
+                 ",mode=" + String(mqttOnly ? "mqtt-only" : "mobile"));
+  publishAlarmMonitoring(alarmCode, text, "Digitaleingang " + String(index + 1),
+                         mqttOnly ? "MQTT only" : "SMS/Anruf", mqttOnly);
+  if (mqttOnly) return;
   for (uint8_t slot = 0; slot < 5; ++slot) {
     const InputAlarmRecipient &recipient = settings.recipients[slot];
     String number = recipient.number;
@@ -1756,6 +1766,8 @@ void setupWeb() {
     doc["sd"] = sdReady;
     doc["rtc"] = rtcReady;
     doc["cellular"] = modem.connected();
+    doc["simReady"] = modem.simReady();
+    doc["alarmDeliveryAvailable"] = modem.alarmDeliveryAvailable();
     doc["signal"] = modem.signalQuality();
     doc["mqtt"] = mqttConnectedAny();
     JsonObject mqttConnection = doc.createNestedObject("mqttConnection");
@@ -2115,6 +2127,11 @@ void sendHeartbeatAlarm() {
   uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
   bool ok = alarmRouter.processAlarmPayload(doc.as<JsonObjectConst>(), modem.imei(), config.commandSecret, secondsOfDay, result);
   queueSystemLog(ok ? "HEARTBEAT_ALARM" : "HEARTBEAT_ALARM_ERROR", result);
+  if (ok) {
+    publishAlarmMonitoring("MIONE_HEARTBEAT", "MiOne Heartbeat seit 15 Minuten ausgefallen",
+                           "Heartbeat", modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                           !modem.alarmDeliveryAvailable());
+  }
 }
 
 void maintainHeartbeatAlarm() {
@@ -2240,13 +2257,18 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     String result = parsed ? String(parsed.c_str()) : "";
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
     uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
+    String alarmCode = input["alarmCode"] | "";
+    String alarmText = input["alarmText"] | input["message"] | input["text"] | "";
+    String priority = input["prioritaet"] | "";
     bool ok = !parsed && alarmRouter.processAlarmPayload(input.as<JsonObjectConst>(),
                                                           modem.imei(), config.commandSecret,
                                                           secondsOfDay, result);
-    String alarmCode = input["alarmCode"] | "";
-    String priority = input["prioritaet"] | "";
     queueSystemLog(ok ? "ALARM" : "ALARM_REJECTED",
                    "code=" + alarmCode + ",priority=" + priority + ",result=" + result);
+    if (ok) {
+      publishAlarmMonitoring(alarmCode, alarmText, "MiOne", modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                             !modem.alarmDeliveryAvailable());
+    }
     if (!root.isEmpty()) {
       DynamicJsonDocument response(512);
       response["ok"] = ok;
@@ -2563,6 +2585,23 @@ void publishMioneStatus(bool force) {
   if (!serviceRoot.isEmpty()) {
     publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/ModemStatus", body, true);
   }
+  publishMioneConfig(force);
+}
+
+void publishMioneConfig(bool force) {
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
+  if (!force && millis() - lastMioneConfigPublish < 30000) return;
+  lastMioneConfigPublish = millis();
+  DynamicJsonDocument doc(8192);
+  config.toJson(doc.to<JsonObject>(), true);
+  JsonObject meta = doc.createNestedObject("meta");
+  meta["type"] = "alarmModemConfig";
+  meta["modemImei"] = modem.imei();
+  meta["timestamp"] = clockText();
+  String body;
+  serializeJson(doc, body);
+  String root = mqttDeviceRoot();
+  if (!root.isEmpty()) publishMqttTopic(root + "/app/config/current", body, true);
 }
 
 bool upDownButtonsPressed(int adcValue) {
@@ -2815,6 +2854,31 @@ void sendAlarmProgress(const String &body) {
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
 }
 
+void publishAlarmMonitoring(const String &alarmCode, const String &alarmText, const String &source,
+                            const String &delivery, bool mqttOnly) {
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
+  DynamicJsonDocument event(1024);
+  event["type"] = "alarmEvent";
+  event["modemImei"] = modem.imei();
+  event["alarmCode"] = alarmCode;
+  event["alarmText"] = alarmText;
+  event["source"] = source;
+  event["delivery"] = delivery;
+  event["mqttOnly"] = mqttOnly;
+  event["status"] = "triggered";
+  event["timestamp"] = clockText();
+  String body;
+  serializeJson(event, body);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/AlarmStatus", body, false);
+  }
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) {
+    publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/AlarmStatus", body, false);
+  }
+}
+
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress) {
   String state = progress == AlarmProgress::starting ? "WIRD GESENDET" :
@@ -2900,8 +2964,15 @@ void processAlarmSocketLine(const String &line) {
   } else {
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
     uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
+    String alarmCode = input["alarmCode"] | "";
+    String alarmText = input["alarmText"] | input["message"] | input["text"] | "";
     ok = alarmRouter.processAlarmPayload(input.as<JsonObjectConst>(), modem.imei(),
                                          config.commandSecret, secondsOfDay, result);
+    if (ok) {
+      publishAlarmMonitoring(alarmCode, alarmText, "TCP",
+                             modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                             !modem.alarmDeliveryAvailable());
+    }
   }
   response["ok"] = ok;
   response["message"] = result;

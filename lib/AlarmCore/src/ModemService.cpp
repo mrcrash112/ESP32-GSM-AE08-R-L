@@ -80,6 +80,7 @@ void ModemService::begin(const DeviceConfig &config) {
   packetDataConnected_ = false;
   mqttConnected_ = false;
   simMqttStarted_ = false;
+  simReady_ = false;
   signalQuality_ = -1;
   modemName_ = "";
   imei_ = "";
@@ -97,6 +98,7 @@ void ModemService::resetHardware() {
   packetDataConnected_ = false;
   mqttConnected_ = false;
   simMqttStarted_ = false;
+  simReady_ = false;
   signalQuality_ = -1;
   modemName_ = "";
   imei_ = "";
@@ -224,7 +226,7 @@ void ModemService::loop() {
 }
 
 bool ModemService::sendSms(const String &number, const String &message) {
-  if (!enabled_ || number.isEmpty() || message.isEmpty()) return false;
+  if (!enabled_ || !alarmDeliveryAvailable() || number.isEmpty() || message.isEmpty()) return false;
   if (!command("AT+CMGF=1", "OK")) return false;
   serial_.print("AT+CMGS=\"");
   serial_.print(number);
@@ -236,7 +238,7 @@ bool ModemService::sendSms(const String &number, const String &message) {
 }
 
 bool ModemService::ring(const String &number, uint16_t seconds) {
-  if (!enabled_ || number.isEmpty()) return false;
+  if (!enabled_ || !alarmDeliveryAvailable() || number.isEmpty()) return false;
   serial_.print("ATD");
   serial_.print(number);
   serial_.println(';');
@@ -558,6 +560,9 @@ void ModemService::pollStatus() {
     if (modemType_.isEmpty()) return;
   }
   if (imei_.isEmpty()) refreshImei();
+  serial_.println("AT+CPIN?");
+  String cpin = readUntil(1500);
+  simReady_ = cpin.indexOf("READY") >= 0;
   serial_.println("AT+CSQ");
   String csq = readUntil(1500);
   int marker = csq.indexOf("+CSQ:");

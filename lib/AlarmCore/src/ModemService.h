@@ -21,6 +21,8 @@ class ModemService {
   bool connected() const { return registered_; }
   bool packetDataConnected() const { return packetDataConnected_; }
   bool mqttConnected() const { return mqttConnected_; }
+  bool simReady() const { return simReady_; }
+  bool alarmDeliveryAvailable() const { return enabled_ && registered_ && simReady_; }
   int signalQuality() const { return signalQuality_; }
   String modemName() const { return modemName_; }
   String model() const { return modemType_; }
@@ -64,4 +66,5 @@ class ModemService {
   uint32_t lastDataAttempt_ = 0;
   bool mqttConnected_ = false;
   bool simMqttStarted_ = false;
+  bool simReady_ = false;
 };
