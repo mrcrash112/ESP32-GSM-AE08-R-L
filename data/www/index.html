@@ -105,10 +105,11 @@
         </section>
 
         <section class="card" id="mione" data-feature="mqtt">
-          <div class="section-heading"><div><span class="step">03</span><h2>MIOne Anbindung</h2><p>System-ID, ModemStatus und Alarmconfig aus dem System. Wenn deaktiviert, läuft das Gerät standalone und beschreibt nur <code>&lt;MQTT Root&gt;/modems/&lt;imei&gt;</code>.</p></div><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
+          <div class="section-heading"><div><span class="step">03</span><h2>MIOne Anbindung</h2><p>System-ID, ModemStatus und Alarmconfig aus dem System.</p></div></div>
           <div class="mqtt-connection waiting" id="mqttConnection">
             <i></i><div class="connection-text"><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
           </div>
+          <div class="section-switch-row"><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
           <div class="mione-live-grid">
             <div class="mione-live waiting" id="heartbeatStatus"><i></i><div><span>MiOne Heartbeat</span><strong id="heartbeatTitle">Warte auf Signal</strong><small id="heartbeatMessage">–</small></div></div>
             <div class="mione-live waiting" id="imeiMatchStatus"><i></i><div><span>IMEI-Abgleich</span><strong id="imeiMatchTitle">Warte auf Konfiguration</strong><small id="imeiMatchMessage">–</small></div></div>
@@ -189,7 +190,8 @@
         </section>
 
         <section class="card" id="updates" data-feature="updates">
-          <div class="section-heading"><div><span class="step">08</span><h2>Firmware</h2><p>Neue Versionen sicher von GitHub prüfen und freigeben.</p></div><label class="switch"><input id="updateCheckEnabled" type="checkbox"><span></span><b>Automatisch prüfen</b></label></div>
+          <div class="section-heading"><div><span class="step">08</span><h2>Firmware</h2><p>Neue Versionen sicher von GitHub prüfen und freigeben.</p></div></div>
+          <div class="section-switch-row"><label class="switch"><input id="updateCheckEnabled" type="checkbox"><span></span><b>Automatisch prüfen</b></label></div>
           <div class="fields two">
             <label class="wide"><span>GitHub-Manifest-URL</span><input id="updateManifestUrl" type="url" maxlength="240" placeholder="https://raw.githubusercontent.com/…/firmware.json"></label>
             <label><span>Firmware-Kanal</span><select id="updateChannel"><option value="stable">Stable</option><option value="beta">Beta</option></select><small>Beta lädt Testversionen aus dem Beta-Kanal.</small></label>
