@@ -40,6 +40,17 @@ bool validMqttTopicRoot(const String &value) {
   return true;
 }
 
+bool validMdnsName(const String &value) {
+  if (value.isEmpty()) return true;
+  if (value.length() > 63) return false;
+  if (value.startsWith("-") || value.endsWith("-")) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    char ch = static_cast<char>(tolower(static_cast<unsigned char>(value[i])));
+    if (!(isalpha(static_cast<unsigned char>(ch)) || isdigit(static_cast<unsigned char>(ch)) || ch == '-')) return false;
+  }
+  return true;
+}
+
 bool safeAtValue(const String &value) {
   return value.indexOf('"') < 0 && value.indexOf('\r') < 0 && value.indexOf('\n') < 0;
 }
@@ -70,6 +81,7 @@ bool validInputDelay(uint16_t seconds) {
 
 void DeviceConfig::setDefaults(const String &chipId) {
   deviceId = "alarm-" + chipId;
+  mdnsName = deviceId;
   webPassword = chipId;
   commandSecret = chipId;
   mqttHost = "194.164.51.139";
@@ -90,6 +102,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   wifi["ssid"] = wifiSsid;
   secret(wifi, "password", wifiPassword, includeSecrets);
   ipToJson(wifi.createNestedObject("ip"), wifiIp);
+  root["mdnsName"] = mdnsName;
 
   JsonObject ethernet = root.createNestedObject("ethernet");
   ethernet["enabled"] = ethernetEnabled;
@@ -169,6 +182,13 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   wifiSsid = wifi["ssid"] | wifiSsid;
   if (wifi["password"].is<const char *>() && wifi["password"] != "***") wifiPassword = wifi["password"].as<String>();
   ipFromJson(wifi["ip"], wifiIp);
+  JsonVariantConst mdns = root["mdnsName"];
+  if (mdns.isNull()) mdnsName = deviceId;
+  else {
+    mdnsName = mdns.as<String>();
+    mdnsName.trim();
+    mdnsName.toLowerCase();
+  }
 
   JsonObjectConst ethernet = root["ethernet"];
   ethernetEnabled = ethernet["enabled"] | ethernetEnabled;
@@ -261,6 +281,7 @@ bool DeviceConfig::validate(String &error) const {
   else if (deviceId.isEmpty() || deviceId.length() > 48) error = "deviceId ist ungueltig";
   else if (!wifiIp.dhcp && (!validIp(wifiIp.address) || !validIp(wifiIp.gateway) || !validIp(wifiIp.subnet))) error = "Statische WLAN-IP ist ungueltig";
   else if (!ethernetIp.dhcp && (!validIp(ethernetIp.address) || !validIp(ethernetIp.gateway) || !validIp(ethernetIp.subnet))) error = "Statische Ethernet-IP ist ungueltig";
+  else if (!validMdnsName(mdnsName)) error = "mDNS-Name ist ungueltig";
   else if ((mqttEnabled || mqttServiceEnabled) && mqttHost.isEmpty()) error = "MQTT-Broker fehlt";
   else if ((mqttEnabled || mqttServiceEnabled) && mqttPort == 0) error = "MQTT-Port ist ungueltig";
   else if (mqttUser.indexOf('#') >= 0 || mqttUser.indexOf('+') >= 0 || mqttUser.indexOf('/') >= 0) error = "MQTT-Benutzername darf keine Topic-Sonderzeichen enthalten";

@@ -109,6 +109,7 @@ function fillForm(c){
   setValue('deviceId',c.deviceId);setChecked('wifiEnabled',c.wifi.enabled);setValue('wifiSsid',c.wifi.ssid);
   radio('wifiIpMode',c.wifi.ip.dhcp);setValue('wifiAddress',c.wifi.ip.address);setValue('wifiGateway',c.wifi.ip.gateway);setValue('wifiSubnet',c.wifi.ip.subnet);setValue('wifiDns',c.wifi.ip.dns);
   setChecked('ethernetEnabled',c.ethernet.enabled);radio('ethernetIpMode',c.ethernet.ip.dhcp);setValue('ethernetAddress',c.ethernet.ip.address);setValue('ethernetGateway',c.ethernet.ip.gateway);setValue('ethernetSubnet',c.ethernet.ip.subnet);setValue('ethernetDns',c.ethernet.ip.dns);
+  setValue('mdnsName',c.mdnsName||c.deviceId);
   setChecked('sdEnabled',c.hardware.sd);setChecked('rtcEnabled',c.hardware.rtc);setChecked('displayEnabled',c.hardware.display);setValue('logIntervalSeconds',c.logging?.intervalSeconds||10);
   setValue('apn',c.cellular.apn);setValue('apnUser',c.cellular.user);
   setChecked('mqttEnabled',c.mqtt.enabled);setValue('mqttBaseTopic',c.mqtt.baseTopic);setChecked('mqttServiceEnabled',c.mqtt.serviceEnabled??Boolean(c.mqtt.topTopic));setValue('mqttTopTopic',c.mqtt.topTopic||'');setValue('mqttHost',c.mqtt.host);setValue('mqttPort',c.mqtt.port);setValue('mqttUser',c.mqtt.user);
@@ -125,6 +126,7 @@ function ipConfig(prefix,name){return{dhcp:isDhcp(name),address:value(`${prefix}
 function buildConfig(){const c=loadedConfig;return{
   schema:c.schema,deviceId:value('deviceId'),provisioned:true,
   wifi:{enabled:checked('wifiEnabled'),ssid:value('wifiSsid'),password:secret('wifiPassword',c.wifi.password),ip:ipConfig('wifi','wifiIpMode')},
+  mdnsName:value('mdnsName'),
   ethernet:{enabled:checked('ethernetEnabled'),ip:ipConfig('ethernet','ethernetIpMode')},
   hardware:{sd:checked('sdEnabled'),rtc:checked('rtcEnabled'),display:checked('displayEnabled')},
   logging:{intervalSeconds:number('logIntervalSeconds')},

@@ -274,7 +274,7 @@ String chipId() {
   return value;
 }
 
-String serialNumber() { return "MIONE-" + chipId(); }
+String serialNumber() { return chipId(); }
 
 bool parseIp(const String &value, IPAddress &address) { return address.fromString(value); }
 
@@ -3191,7 +3191,8 @@ void setup() {
   showBootStatus("Webserver", 93, "wird gestartet");
   setupWeb();
   SystemRuntime::kickWatchdog();
-  MDNS.begin(config.deviceId.c_str());
+  String mdnsHost = config.mdnsName.isEmpty() ? config.deviceId : config.mdnsName;
+  MDNS.begin(mdnsHost.c_str());
   showBootStatus("System bereit", 100, accessPoint ? "Config-Hotspot aktiv" : "Alarmierung aktiv");
   Preferences logPrefs;
   uint32_t bootCount = 1;

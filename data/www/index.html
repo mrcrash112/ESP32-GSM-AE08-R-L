@@ -57,7 +57,7 @@
 
       <form id="configForm" autocomplete="off">
         <section class="card" id="network">
-          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN und kabelgebundene Verbindung konfigurieren.</p></div></div>
+          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN, Ethernet und den mDNS-Namen konfigurieren.</p></div></div>
 
           <div class="subsection" data-feature="wifi">
             <div class="subsection-title"><div><h3>WLAN</h3><p>Drahtloses Netzwerk für Webserver und MQTT.</p></div><label class="switch"><input id="wifiEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
@@ -88,6 +88,13 @@
               <label><span>Gateway</span><input id="ethernetGateway" inputmode="decimal" placeholder="192.168.1.1"></label>
               <label><span>Subnetzmaske</span><input id="ethernetSubnet" inputmode="decimal" placeholder="255.255.255.0"></label>
               <label><span>DNS-Server</span><input id="ethernetDns" inputmode="decimal" placeholder="1.1.1.1"></label>
+            </div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title"><div><h3>mDNS</h3><p>Der Name wird im lokalen Netz als <code>.local</code>-Adresse veröffentlicht.</p></div></div>
+            <div class="fields two">
+              <label class="wide"><span>mDNS-Name</span><input id="mdnsName" type="text" maxlength="63" placeholder="alarm-12345678"><small>Ohne <code>.local</code>. Erlaubt sind Buchstaben, Zahlen und Bindestriche.</small></label>
             </div>
           </div>
         </section>

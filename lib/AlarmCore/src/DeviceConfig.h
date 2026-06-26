@@ -33,6 +33,7 @@ struct DeviceConfig {
   String wifiSsid;
   String wifiPassword;
   IPv4Config wifiIp;
+  String mdnsName;
 
   bool ethernetEnabled = false;
   IPv4Config ethernetIp;
