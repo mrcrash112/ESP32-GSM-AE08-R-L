@@ -74,6 +74,8 @@ uint32_t lastCellularMqttErrorAt = 0;
 uint32_t lastMioneStatusPublish = 0;
 uint32_t lastMioneConfigPublish = 0;
 uint32_t lastSocketStatusPublish = 0;
+uint32_t lastCommunicationHealthAt = 0;
+bool communicationHealthEverSeen = false;
 uint32_t mioneStatusSequence = 0;
 int mqttConnectionCode = -1;
 String mqttConnectionMessage = "Noch nicht gestartet";
@@ -143,6 +145,7 @@ void showBootStatus(const String &step, uint8_t progress, const String &detail);
 bool isPowerCycleReset();
 bool waitForBootImei(uint8_t progress, uint32_t timeoutMs);
 void maintainBootImeiRecovery();
+void maintainCommunicationSupervisor();
 
 struct UpdateState {
   bool available = false;
@@ -195,6 +198,11 @@ void publishAlarmMonitoring(const String &alarmCode, const String &alarmText, co
                             const String &delivery, bool mqttOnly);
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress);
+
+void noteCommunicationHealth() {
+  communicationHealthEverSeen = true;
+  lastCommunicationHealthAt = millis();
+}
 
 void persistUpdateManualLock(const String &detail) {
   Preferences prefs;
@@ -1404,20 +1412,44 @@ void maintainBootImeiRecovery() {
     bootImeiRecoveryPending = false;
     queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
     maintainSystemLog(true);
+    imeiRecoveryReboots = 0;
     return;
   }
   if (millis() - bootImeiRecoveryLastAttemptAt < 30000) return;
   bootImeiRecoveryLastAttemptAt = millis();
-  queueSystemLog("BOOT_IMEI_BACKGROUND_RETRY", "detail=IMEI weiterhin nicht verfuegbar");
+  ++imeiRecoveryReboots;
+  queueSystemLog("BOOT_IMEI_BACKGROUND_RETRY",
+                 "attempt=" + String(imeiRecoveryReboots) + ",detail=IMEI weiterhin nicht verfuegbar");
   maintainSystemLog(true);
+  if (imeiRecoveryReboots >= 3) {
+    queueSystemLog("BOOT_IMEI_SUPERVISOR",
+                   "reason=IMEI weiterhin nicht verfuegbar nach " + String(imeiRecoveryReboots) + " Versuchen");
+    maintainSystemLog(true);
+    requestReboot("boot-imei", "IMEI weiterhin nicht verfuegbar", 500);
+    return;
+  }
   modem.resetHardware();
   modem.begin(config);
   modem.loop();
   if (!modem.imei().isEmpty()) {
     bootImeiRecoveryPending = false;
+    imeiRecoveryReboots = 0;
     queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
     maintainSystemLog(true);
   }
+}
+
+void maintainCommunicationSupervisor() {
+  if (restartAt != 0 || accessPoint) return;
+  if (!communicationHealthEverSeen || lastCommunicationHealthAt == 0) return;
+  if (millis() - lastCommunicationHealthAt < 30000UL) return;
+  queueSystemLog("SUPERVISOR_REBOOT",
+                 "reason=communication-timeout,lastHealthMs=" + String(lastCommunicationHealthAt) +
+                 ",modem=" + String(modem.connected() ? 1 : 0) +
+                 ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
+                 ",mqtt=" + String(mqttConnectedAny() ? 1 : 0));
+  maintainSystemLog(true);
+  requestReboot("supervisor", "Keine Kommunikationsaktivitaet fuer 30s", 500);
 }
 
 String activeNetworkName() {
@@ -2375,13 +2407,19 @@ bool mqttConnectedAny() {
 
 bool publishMqttTopic(const String &topic, const String &body, bool retain) {
   if (topic.isEmpty()) return false;
-  if (mqtt.connected()) return mqtt.publish(topic.c_str(), body.c_str(), retain);
+  if (mqtt.connected()) {
+    bool ok = mqtt.publish(topic.c_str(), body.c_str(), retain);
+    if (ok) noteCommunicationHealth();
+    return ok;
+  }
   if (!modem.mqttConnected()) return false;
   String error;
   bool ok = modem.mqttPublish(topic, body, retain, error);
   if (!ok && millis() - lastCellularMqttErrorAt > 30000) {
     lastCellularMqttErrorAt = millis();
     setMqttConnectionStatus(-18, error, "Mobilfunk");
+  } else if (ok) {
+    noteCommunicationHealth();
   }
   return ok;
 }
@@ -3233,6 +3271,7 @@ void loop() {
   maintainMqtt();
   maintainHeartbeatAlarm();
   publishMioneStatus();
+  maintainCommunicationSupervisor();
   maintainButtons();
   maintainUpdates();
   maintainClock();
