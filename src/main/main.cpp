@@ -119,6 +119,7 @@ uint32_t lastUpdateCheck = 0;
 uint32_t updateButtonSince = 0;
 int updateButtonIdle = 4095;
 constexpr uint32_t kMioneStatusPublishMs = 60000UL;
+constexpr uint32_t kCommunicationSupervisorTimeoutMs = kMioneStatusPublishMs * 2;
 int currentButtonAdc = 4095;
 uint16_t buttonSamples[10] = {};
 uint32_t buttonSampleSum = 0;
@@ -1479,14 +1480,14 @@ void maintainBootImeiRecovery() {
 void maintainCommunicationSupervisor() {
   if (restartAt != 0 || accessPoint) return;
   if (!communicationHealthEverSeen || lastCommunicationHealthAt == 0) return;
-  if (millis() - lastCommunicationHealthAt < 30000UL) return;
+  if (millis() - lastCommunicationHealthAt < kCommunicationSupervisorTimeoutMs) return;
   queueSystemLog("SUPERVISOR_REBOOT",
                  "reason=communication-timeout,lastHealthMs=" + String(lastCommunicationHealthAt) +
                  ",modem=" + String(modem.connected() ? 1 : 0) +
                  ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
                  ",mqtt=" + String(mqttConnectedAny() ? 1 : 0));
   maintainSystemLog(true);
-  requestReboot("supervisor", "Keine Kommunikationsaktivitaet fuer 30s", 500);
+  requestReboot("supervisor", "Keine Kommunikationsaktivitaet fuer 120s", 500);
 }
 
 String activeNetworkName() {
