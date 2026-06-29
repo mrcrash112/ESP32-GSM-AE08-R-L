@@ -20,6 +20,7 @@ uint32_t lastDisplayUpdate = 0;
 
 void appendRecoveryLog(const String &event, const String &details) {
   if (!sdMounted) return;
+  SD.mkdir("/logs");
   File logFile = SD.open("/logs/system.csv", FILE_APPEND);
   if (!logFile) return;
   if (logFile.size() == 0) logFile.print("timestamp;event;details\n");

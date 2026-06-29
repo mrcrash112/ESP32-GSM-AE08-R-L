@@ -1644,7 +1644,6 @@ void maintainSystemLog(bool force = false) {
   if (!sdReady) return;
   uint32_t interval = static_cast<uint32_t>(config.logIntervalSeconds) * 1000UL;
   if (!force && millis() - lastSystemLogWrite < interval) return;
-  lastSystemLogWrite = millis();
   String ip = accessPoint ? WiFi.softAPIP().toString() :
               (ethernetReady && Ethernet.linkStatus() == LinkON ? Ethernet.localIP().toString() :
                (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "0.0.0.0"));
@@ -1662,6 +1661,7 @@ void maintainSystemLog(bool force = false) {
                   ",heap=" + String(ESP.getFreeHeap());
   queueSystemLog("STATUS", status);
 
+  SD.mkdir("/logs");
   File logFile = SD.open("/logs/system.csv", FILE_APPEND);
   if (!logFile) return;
   if (logFile.size() == 0) logFile.print("timestamp;event;details\n");
@@ -1669,7 +1669,10 @@ void maintainSystemLog(bool force = false) {
   size_t written = logFile.print(batch);
   logFile.flush();
   logFile.close();
-  if (written == batch.length()) pendingSystemLog = "";
+  if (written == batch.length()) {
+    pendingSystemLog = "";
+    lastSystemLogWrite = millis();
+  }
 }
 
 String readSystemLogTail(uint16_t limit, String &error) {
@@ -1776,7 +1779,8 @@ void beginSharedSpi() {
 }
 
 void beginSd() {
-  if (!config.sdEnabled && config.provisioned) return;
+  // Logs, Webdateien und Firmware-Updates brauchen die SD auch dann, wenn
+  // der SD-Schalter in der Konfiguration deaktiviert ist.
   sdReady = SD.begin(BoardPins::sdCs, SPI, kSdSpiFrequency);
   if (sdReady) {
     SD.mkdir("/www");

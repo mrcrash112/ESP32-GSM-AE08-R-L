@@ -7,7 +7,7 @@ let otaInProgress=false;
 let updatePollTimer;
 let reloadAfterReconnect=false;
 const stableManifestUrl='https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/latest/download/firmware.json';
-const betaManifestUrl='https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json?v=0.1.64';
+const betaManifestUrl='https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json?v=0.1.65';
 
 function notify(message,error=false){const toast=$('toast');toast.textContent=message;toast.className=`toast show${error?' error':''}`;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.className='toast',4500)}
 function value(id){return $(id).value.trim()}
