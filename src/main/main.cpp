@@ -118,6 +118,7 @@ uint32_t lastTimeSync = 0;
 uint32_t lastUpdateCheck = 0;
 uint32_t updateButtonSince = 0;
 int updateButtonIdle = 4095;
+constexpr uint32_t kMioneStatusPublishMs = 60000UL;
 int currentButtonAdc = 4095;
 uint16_t buttonSamples[10] = {};
 uint32_t buttonSampleSum = 0;
@@ -2789,7 +2790,7 @@ String mioneStatusBody() {
 
 void publishMioneStatus(bool force) {
   if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
-  if (!force && millis() - lastMioneStatusPublish < 5000) return;
+  if (!force && millis() - lastMioneStatusPublish < kMioneStatusPublishMs) return;
   lastMioneStatusPublish = millis();
   String body = mioneStatusBody();
   String root = mqttDeviceRoot();

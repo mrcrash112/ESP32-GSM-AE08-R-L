@@ -1,5 +1,7 @@
 #include "DeviceConfig.h"
 
+#include "BuildInfo.h"
+
 #include <IPAddress.h>
 
 namespace {
@@ -38,6 +40,10 @@ bool validMqttTopicRoot(const String &value) {
   if (value.indexOf('#') >= 0 || value.indexOf('+') >= 0) return false;
   if (value.indexOf("//") >= 0) return false;
   return true;
+}
+
+String betaManifestUrl() {
+  return String("https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json?v=") + BuildInfo::version;
 }
 
 bool validMdnsName(const String &value) {
@@ -272,6 +278,10 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   }
   updateChannel = update["channel"] | updateChannel;
   updateManifestUrl = update["manifestUrl"] | updateManifestUrl;
+  if (updateChannel == "beta") {
+    const String legacyBetaManifestUrl = "https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json";
+    if (updateManifestUrl.isEmpty() || updateManifestUrl == legacyBetaManifestUrl) updateManifestUrl = betaManifestUrl();
+  }
   updateCheckMinutes = update["checkMinutes"] | updateCheckMinutes;
   return validate(error);
 }
