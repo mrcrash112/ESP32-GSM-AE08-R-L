@@ -86,6 +86,22 @@ String mqttMobileSyncMessage = "Noch keine Mobile-Konfiguration empfangen";
 uint32_t appBridgeLastSeenAt = 0;
 String appBridgeSource = "The_App";
 String appBridgeMessage = "Noch kein App-/Bridge-Signal empfangen";
+constexpr size_t kMaxAppPresenceEntries = 16;
+constexpr uint32_t kAppPresenceFreshMs = 75UL * 1000UL;
+struct AppPresenceRecord {
+  String installationId;
+  String uid;
+  String name;
+  String email;
+  String role;
+  String topic;
+  String timestampUtc;
+  String payload;
+  uint32_t lastSeenAt = 0;
+  bool reportedOnline = false;
+};
+AppPresenceRecord appPresenceRecords[kMaxAppPresenceEntries];
+size_t appPresenceCount = 0;
 uint32_t mioneHeartbeatReceivedAt = 0;
 bool mioneHeartbeatValue = false;
 String mioneHeartbeatImei;
@@ -132,6 +148,7 @@ constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
+constexpr uint32_t kHeartbeatFreshMs = 30UL * 1000UL;
 RTC_DATA_ATTR uint8_t imeiRecoveryReboots = 0;
 String rebootRequestReason;
 String rebootRequestDetail;
@@ -189,6 +206,11 @@ String mioneTopicRoot();
 String mioneConfigRoot();
 String serviceMqttRoot();
 bool appBridgeIsOnline();
+String appPresenceTopicRoot();
+AppPresenceRecord *findAppPresenceRecord(const String &installationId);
+AppPresenceRecord *ensureAppPresenceRecord(const String &installationId);
+bool isAppPresenceOnline(const AppPresenceRecord &record);
+int activeAppPresenceCount();
 bool mqttConnectedAny();
 bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
@@ -1338,6 +1360,15 @@ String logTimestamp() {
   return text;
 }
 
+String utcTimestamp() {
+  if (!rtcReady) return "";
+  DateTime now = rtc.now();
+  char text[32];
+  snprintf(text, sizeof(text), "%04u-%02u-%02uT%02u:%02u:%02uZ",
+           now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+  return text;
+}
+
 String cleanLogValue(String value) {
   value.replace(';', ',');
   value.replace('\r', ' ');
@@ -1362,6 +1393,11 @@ void requestReboot(const String &reason, const String &detail, uint32_t delayMs)
   rebootRequestReason = reason.isEmpty() ? "manual" : reason;
   rebootRequestDetail = detail;
   SystemRuntime::requestReboot(rebootRequestReason, rebootRequestDetail);
+  queueSystemLog("REBOOT_REQUEST",
+                 "source=" + rebootRequestReason +
+                 ",detail=" + rebootRequestDetail +
+                 ",delayMs=" + String(delayMs));
+  maintainSystemLog(true);
   restartAt = millis() + delayMs;
 }
 
@@ -1786,7 +1822,7 @@ void setupWeb() {
   web.on("/", HTTP_GET, [] { if (authorized()) servePortal(); });
   web.on("/api/status", HTTP_GET, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(2560);
+    DynamicJsonDocument doc(4096);
     doc["version"] = BuildInfo::version;
     doc["deviceId"] = config.deviceId;
     doc["serialNumber"] = serialNumber();
@@ -1813,13 +1849,42 @@ void setupWeb() {
     appBridge["source"] = appBridgeSource;
     appBridge["message"] = appBridgeMessage;
     appBridge["ageSeconds"] = appBridgeLastSeenAt ? static_cast<int32_t>((millis() - appBridgeLastSeenAt) / 1000UL) : -1;
+    JsonObject theApp = doc.createNestedObject("theApp");
+    String appRoot = appPresenceTopicRoot();
+    theApp["topicRoot"] = appRoot;
+    theApp["onlineCount"] = activeAppPresenceCount();
+    theApp["totalCount"] = static_cast<int32_t>(appPresenceCount);
+    JsonArray appClients = theApp.createNestedArray("clients");
+    for (size_t i = 0; i < appPresenceCount; ++i) {
+      const AppPresenceRecord &record = appPresenceRecords[i];
+      JsonObject client = appClients.createNestedObject();
+      client["installationId"] = record.installationId;
+      client["uid"] = record.uid;
+      client["name"] = record.name.isEmpty() ? (record.email.isEmpty() ? record.uid : record.email) : record.name;
+      client["displayName"] = record.name;
+      client["email"] = record.email;
+      client["role"] = record.role;
+      client["online"] = isAppPresenceOnline(record);
+      client["reportedOnline"] = record.reportedOnline;
+      client["ageSeconds"] = record.lastSeenAt ? static_cast<int32_t>((millis() - record.lastSeenAt) / 1000UL) : -1;
+      client["timestampUtc"] = record.timestampUtc;
+      client["topic"] = record.topic;
+    }
     JsonObject mioneSystem = doc.createNestedObject("mioneSystem");
     mioneSystem["enabled"] = config.mqttEnabled;
     mioneSystem["systemId"] = config.mqttBaseTopic;
     mioneSystem["modemTopic"] = mqttDeviceRoot();
     mioneSystem["statusTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/ModemStatus" : "";
     mioneSystem["heartbeatTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/Heartbeat" : "";
+    uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
+    bool heartbeatSeen = mioneHeartbeatReceivedAt != 0;
+    bool heartbeatValid = config.mqttEnabled && validMioneHeartbeat();
     mioneSystem["heartbeatOnline"] = config.mqttEnabled && validMioneHeartbeat();
+    mioneSystem["heartbeatReceived"] = heartbeatSeen;
+    mioneSystem["heartbeatAgeSeconds"] = heartbeatSeen ? static_cast<int32_t>(heartbeatAge / 1000UL) : -1;
+    mioneSystem["heartbeatState"] = !config.mqttEnabled ? "deaktiviert" :
+                                    heartbeatValid ? "aktiv" :
+                                    heartbeatSeen ? "ausstehend" : "wartet";
     mioneSystem["subscriptionReady"] = mqttMobileSubscriptionReady;
     JsonObject logging = doc.createNestedObject("logging");
     logging["intervalSeconds"] = config.logIntervalSeconds;
@@ -1847,7 +1912,7 @@ void setupWeb() {
     uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
     bool heartbeatImeiMatches = !modem.imei().isEmpty() && mioneHeartbeatImei == modem.imei();
     heartbeat["received"] = mioneHeartbeatReceivedAt != 0;
-    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= 60000 && heartbeatImeiMatches;
+    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= kHeartbeatFreshMs && heartbeatImeiMatches;
     heartbeat["ageSeconds"] = mioneHeartbeatReceivedAt ? heartbeatAge / 1000 : -1;
     heartbeat["value"] = mioneHeartbeatValue;
     heartbeat["timestampUtc"] = mioneHeartbeatTimestamp;
@@ -1862,6 +1927,23 @@ void setupWeb() {
     imeiCheck["matches"] = !modem.imei().isEmpty() && mioneConfiguredImei == modem.imei();
     imeiCheck["topic"] = topicRoot.isEmpty() ? "" : topicRoot + "/Config/Mobile/modemImei";
     jsonResponse(200, doc);
+  });
+  web.on("/api/push/test", HTTP_POST, [] {
+    if (!authorized()) return;
+    if (!mqttConnectedAny()) return errorResponse(503, "MQTT nicht verbunden");
+    if (config.mqttBaseTopic.isEmpty()) return errorResponse(400, "System-ID fehlt");
+    DynamicJsonDocument doc(384);
+    doc["type"] = "pushTest";
+    doc["systemId"] = config.mqttBaseTopic;
+    doc["message"] = "Push Service Test vom ESP32";
+    doc["source"] = "ESP32-GSM-AE08-R-L";
+    doc["timestampUtc"] = utcTimestamp();
+    String body;
+    serializeJson(doc, body);
+    if (!publishMqttTopic(config.mqttBaseTopic + "/push/test", body, false)) {
+      return errorResponse(502, "Push Service Test konnte nicht gesendet werden");
+    }
+    web.send(200, "application/json", "{\"ok\":true}");
   });
   web.on("/api/config", HTTP_GET, [] {
     if (!authorized()) return;
@@ -2099,6 +2181,79 @@ void touchAppBridgeStatus(const String &source, const String &message, bool onli
   if (!online) appBridgeLastSeenAt = millis() - 120001UL;
 }
 
+String appPresenceTopicRoot() {
+  if (config.mqttBaseTopic.isEmpty()) return "";
+  return config.mqttBaseTopic + "/the_app";
+}
+
+AppPresenceRecord *findAppPresenceRecord(const String &installationId) {
+  if (installationId.isEmpty()) return nullptr;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (appPresenceRecords[i].installationId == installationId) {
+      return &appPresenceRecords[i];
+    }
+  }
+  return nullptr;
+}
+
+AppPresenceRecord *ensureAppPresenceRecord(const String &installationId) {
+  if (installationId.isEmpty()) return nullptr;
+  if (AppPresenceRecord *existing = findAppPresenceRecord(installationId)) {
+    return existing;
+  }
+  if (appPresenceCount < kMaxAppPresenceEntries) {
+    AppPresenceRecord &record = appPresenceRecords[appPresenceCount++];
+    record = AppPresenceRecord();
+    record.installationId = installationId;
+    return &record;
+  }
+  size_t oldestIndex = 0;
+  uint32_t oldestSeen = UINT32_MAX;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (appPresenceRecords[i].lastSeenAt < oldestSeen) {
+      oldestSeen = appPresenceRecords[i].lastSeenAt;
+      oldestIndex = i;
+    }
+  }
+  AppPresenceRecord &record = appPresenceRecords[oldestIndex];
+  record = AppPresenceRecord();
+  record.installationId = installationId;
+  return &record;
+}
+
+bool isAppPresenceOnline(const AppPresenceRecord &record) {
+  if (record.lastSeenAt == 0) return false;
+  if (!record.reportedOnline) return false;
+  return millis() - record.lastSeenAt <= kAppPresenceFreshMs;
+}
+
+int activeAppPresenceCount() {
+  int count = 0;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (isAppPresenceOnline(appPresenceRecords[i])) ++count;
+  }
+  return count;
+}
+
+void recordAppPresence(const String &installationId, JsonObjectConst input, const String &topic, const String &payload) {
+  AppPresenceRecord *record = ensureAppPresenceRecord(installationId);
+  if (record == nullptr) return;
+  record->topic = topic;
+  record->payload = payload;
+  String uid = input["uid"] | "";
+  if (!uid.isEmpty()) record->uid = uid;
+  String name = input["displayName"] | input["name"] | "";
+  if (!name.isEmpty()) record->name = name;
+  String email = input["email"] | "";
+  if (!email.isEmpty()) record->email = email;
+  String role = input["role"] | "";
+  if (!role.isEmpty()) record->role = role;
+  String timestampUtc = input["timestampUtc"] | "";
+  if (!timestampUtc.isEmpty()) record->timestampUtc = timestampUtc;
+  record->reportedOnline = input["online"] | true;
+  record->lastSeenAt = millis();
+}
+
 bool mqttIdentityValid(JsonObjectConst input) {
   String imei = input["imei"] | "";
   String secret = input["secret"] | "";
@@ -2123,24 +2278,34 @@ void storeConfigRevision(const String &revision) {
 }
 
 bool recordMioneHeartbeat(const String &imei, bool value, const String &timestamp, const String &source, String &result) {
+  if (imei.isEmpty()) {
+    result = "Heartbeat ohne Modem-IMEI ignoriert";
+    mioneHeartbeatMessage = result + " (" + source + ")";
+    return false;
+  }
+  bool ok = !modem.imei().isEmpty() && imei == modem.imei();
+  if (!ok) {
+    result = "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+    mioneHeartbeatMessage = result + " (" + source + ")";
+    return false;
+  }
   mioneHeartbeatImei = imei;
   mioneHeartbeatValue = value;
   mioneHeartbeatTimestamp = timestamp;
   mioneHeartbeatReceivedAt = millis();
-  bool ok = !modem.imei().isEmpty() && imei == modem.imei();
-  if (ok && value) {
+  if (value) {
     heartbeatMonitorStartedAt = millis();
     lastHeartbeatAlarmAt = 0;
   }
-  result = ok ? "Heartbeat empfangen" : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+  result = "Heartbeat empfangen";
   mioneHeartbeatMessage = result + " (" + source + ")";
-  return ok;
+  return true;
 }
 
 bool validMioneHeartbeat() {
-  if (!mioneHeartbeatReceivedAt || !mioneHeartbeatValue) return false;
+  if (!mioneHeartbeatReceivedAt) return false;
   if (modem.imei().isEmpty() || mioneHeartbeatImei != modem.imei()) return false;
-  return millis() - mioneHeartbeatReceivedAt <= kHeartbeatAlarmMs;
+  return millis() - mioneHeartbeatReceivedAt <= kHeartbeatFreshMs;
 }
 
 void sendHeartbeatAlarm() {
@@ -2210,6 +2375,21 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     } else {
       touchAppBridgeStatus(source, "MQTT-Aktivitaet erkannt", true);
     }
+  }
+  String appRoot = appPresenceTopicRoot();
+  if (!appRoot.isEmpty() && incoming.startsWith(appRoot + "/") && incoming.endsWith("/presence")) {
+    DynamicJsonDocument input(768);
+    DeserializationError parsed = deserializeJson(input, payload, length);
+    if (!parsed && input.is<JsonObjectConst>()) {
+      String remainder = incoming.substring(appRoot.length() + 1);
+      int slash = remainder.indexOf('/');
+      String installationId = slash >= 0 ? remainder.substring(0, slash) : remainder;
+      String body;
+      body.reserve(length);
+      for (unsigned int i = 0; i < length; ++i) body += static_cast<char>(payload[i]);
+      recordAppPresence(installationId, input.as<JsonObjectConst>(), incoming, body);
+    }
+    return;
   }
   String mioneHeartbeatTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Heartbeat";
   String mioneImeiTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Config/Mobile/modemImei";
@@ -2550,6 +2730,8 @@ void maintainMqtt() {
         subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       }
       topic = mioneRoot + "/Alarme";
+      subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
+      topic = config.mqttBaseTopic + "/the_app/+/presence";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       mqttMobileSubscriptionReady = subscriptionsOk;
       if (!subscriptionsOk) mqttMobileSyncMessage = "MQTT-Abonnement der Alarmfunktionen-Topics fehlgeschlagen";
@@ -3249,8 +3431,10 @@ void setup() {
                        ",model=" + modem.model();
   bootDetails += ",imeiRecovery=" + String(imeiRecoveryReboots);
   if (hadPlannedReboot) {
-    bootDetails += ",requested=" + plannedRebootReason;
-    if (!plannedRebootDetail.isEmpty()) bootDetails += ",requestedDetail=" + plannedRebootDetail;
+    bootDetails += ",rebootSource=" + plannedRebootReason;
+    if (!plannedRebootDetail.isEmpty()) bootDetails += ",rebootDetail=" + plannedRebootDetail;
+  } else {
+    bootDetails += ",rebootSource=none";
   }
   queueSystemLog("BOOT", bootDetails);
   delay(500);
@@ -3281,7 +3465,7 @@ void loop() {
   if (restartAt && static_cast<int32_t>(millis() - restartAt) >= 0) {
     String reason = rebootRequestReason.isEmpty() ? "manual" : rebootRequestReason;
     String detail = rebootRequestDetail.isEmpty() ? "Geplanter Neustart" : rebootRequestDetail;
-    queueSystemLog("REBOOT", "reason=" + reason + ",detail=" + detail);
+    queueSystemLog("REBOOT", "source=" + reason + ",detail=" + detail);
     maintainSystemLog(true);
     ESP.restart();
   }

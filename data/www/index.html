@@ -129,6 +129,16 @@
             <div class="routing-sync" id="routingSync"><i></i><span><b>Synchronisierung wird geprüft</b><small id="routingSyncMessage">–</small></span></div>
             <div class="mobile-slots" id="mobileSlots"><p class="empty">Mobilfunknummern werden geladen …</p></div>
           </div>
+          <div class="app-presence">
+            <div class="routing-head">
+              <div>
+                <h4>Aktive App-Anmeldungen</h4>
+                <p>Jede Installation meldet sich unter <code>&lt;system-id&gt;/the_app/&lt;uuid&gt;/presence</code>.</p>
+              </div>
+              <div><span>Online</span><strong id="appPresenceCount">–</strong></div>
+            </div>
+            <div class="app-presence-list" id="appPresenceList"><p class="empty">Noch keine App-Anmeldungen gefunden.</p></div>
+          </div>
           <div class="subsection">
             <div class="subsection-title"><div><h3>Alarmfortschritt</h3><p>Alarmcode, Rufnummer, SMS/Anruf und Ergebnis an den MiOne-PC melden.</p></div><label class="switch"><input id="alarmProgressEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
           </div>
@@ -147,6 +157,10 @@
             <div class="fields two">
               <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Wird nur aktiv benutzt, wenn der Dienste-Broker eingeschaltet ist.</small></label>
             </div>
+          </div>
+          <div class="subsection" id="pushSection">
+            <div class="subsection-title"><div><h3>Push-Benachrichtigung</h3><p>Push Service Test an die in der App aktivierten Benutzer des aktuellen Systems senden.</p></div></div>
+            <button type="button" id="pushTestButton">Push Service Test senden</button>
           </div>
           <div class="subsection" data-feature="offlineTcp">
             <div class="subsection-title"><div><h3>TCP-Socket Direktverbindung</h3><p>Direkter Befehlskanal im lokalen WLAN oder Ethernet.</p></div><label class="switch"><input id="offlineTcpEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>

@@ -149,10 +149,144 @@ function renderUpdateButton(update){const button=$('checkUpdate'),checking=Boole
 async function api(url,options){const response=await fetch(url,options);let body={};try{body=await response.json()}catch{body={error:`HTTP ${response.status}`}}if(!response.ok)throw new Error(body.error||body.message||`HTTP ${response.status}`);return body}
 function renderMqttConnection(mqtt){const panel=$('mqttConnection');const disabled=mqtt.code===-10;const state=mqtt.connected?'connected':disabled?'disabled':mqtt.code===-1?'waiting':'error';panel.className=`mqtt-connection ${state}`;$('mqttConnectionTitle').textContent=mqtt.connected?'MQTT verbunden':disabled?'MQTT deaktiviert':state==='waiting'?'Verbindung wird vorbereitet':'MQTT nicht verbunden';$('mqttConnectionMessage').textContent=`${mqtt.message||'Kein Status verfügbar'}${mqtt.transport?` über ${mqtt.transport}`:''}`;$('mqttConnectionCode').textContent=mqtt.code>=-4&&mqtt.code<=5?`Code ${mqtt.code}`:'Lokal'}
 function formatVersion(version){const value=String(version||'').trim();if(!value||value==='0.0.0')return'';return value.replace(/_Beta$/i,' Beta').replace(/-beta$/i,' Beta')}
-async function loadStatus(){try{const s=await api('/api/status');if(reloadAfterReconnect){reloadAfterReconnect=false;setTimeout(()=>location.reload(),800);return}otaInProgress=updateNeedsPolling(s.update);renderUpdateButton(s.update);const paths={wifi:'WLAN',ethernet:'Ethernet',cellular:'Mobilfunk',offline:'Offline'},currentFirmware=formatVersion(s.update.currentVersion)||'–',currentRecovery=formatVersion(s.update.recoveryVersion),currentWeb=formatVersion(s.update.currentWebVersion),bridge=s.appBridge||{},mione=s.mioneSystem||{},mioneState=mione.enabled===false?'deaktiviert':s.mqtt?'online':'offline',heartbeatState=mione.enabled===false?'aus':mione.heartbeatOnline?'online':'offline';$('connectionState').classList.add('online');$('connectionState').querySelector('span').textContent='Gerät verbunden';$('connectionDetail').textContent=`MIOne-System: ${mioneState} · Heartbeat: ${heartbeatState} · ${bridge.source||'The_App'}: ${bridge.online?'online':'offline'}`;$('serialNumber').textContent=s.serialNumber||'–';$('modemImei').textContent=s.modemImei||'Nicht verfügbar';$('modemType').value=s.modemModel||'Nicht erkannt';$('wifiStatus').textContent=s.wifiIp||'Nicht verbunden';$('ethernetStatus').textContent=s.ethernetIp||'Nicht verbunden';$('cellularStatus').textContent=s.cellular?'Verbunden':'Nicht verbunden';$('mqttStatus').textContent=mione.enabled===false?'Deaktiviert':s.mqtt?'Verbunden':'Getrennt';$('appBridgeStatus').textContent=bridge.online?`${bridge.source||'The_App'} online`:`${bridge.source||'The_App'} offline`;renderMqttConnection(s.mqttConnection||{connected:s.mqtt,code:s.mqtt?0:-1,message:s.mqtt?'Verbunden':'Getrennt',transport:''});$('firmwareVersionStatus').textContent=currentFirmware;$('dateTimeStatus').textContent=s.dateTime||'–';$('internetStatus').textContent=paths[s.internet]||s.internet||'–';$('currentFirmware').textContent=currentFirmware;$('installedDetails').textContent=`Recovery: ${currentRecovery||'Noch nicht gestartet'} · Web: ${currentWeb||'Nicht versioniert'}`;const firmwareState=$('firmwareUpdateState'),recoveryState=$('recoveryUpdateState'),webState=$('webUpdateState');firmwareState.textContent=s.update.firmwareAvailable?`Update ${formatVersion(s.update.version)} verfügbar`:'Aktuell';recoveryState.textContent=s.update.recoveryAvailable?`Update ${formatVersion(s.update.recoveryTargetVersion)} verfügbar`:'Aktuell';webState.textContent=s.update.webAvailable?`Update ${formatVersion(s.update.webTargetVersion)} verfügbar`:'Aktuell';firmwareState.className=s.update.firmwareAvailable?'update-available':'update-current';recoveryState.className=s.update.recoveryAvailable?'update-available':'update-current';webState.className=s.update.webAvailable?'update-available':'update-current';const progress=(s.update.installing||s.update.downloading||s.update.checking||s.update.downloadQueued)&&s.update.progress?` (${s.update.progress}%)`:'';const ready=s.update.available&&s.update.downloaded&&!s.update.autoInstall&&!s.update.installing&&!s.update.approved?' · Dateien geladen':'';$('updateMessage').textContent=s.update.failed?`Fehler: ${s.update.message||s.update.detail||'Update fehlgeschlagen'}`:`${s.update.message||'Noch nicht geprüft'}${progress}${ready}${s.update.detail?` · ${s.update.detail}`:''}`;$('approveUpdate').hidden=!s.update.available||!s.update.downloaded||s.update.failed||s.update.manualCheckRequired||s.update.checking||s.update.downloadQueued||s.update.installing||s.update.approved||s.update.downloading||s.update.autoInstall}catch(error){if(otaInProgress&&networkError(error)){reloadAfterReconnect=true;$('connectionState').querySelector('span').textContent='OTA läuft / Gerät startet neu';$('connectionDetail').textContent='Bitte warten …';$('updateMessage').textContent='Verbindung während des Updates unterbrochen. Bitte warten …';$('approveUpdate').hidden=true;return}$('connectionState').querySelector('span').textContent='Gerät nicht erreichbar';$('connectionDetail').textContent='–';notify(error.message,true)}}
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    if (reloadAfterReconnect) {
+      reloadAfterReconnect = false;
+      setTimeout(() => location.reload(), 800);
+      return;
+    }
+    otaInProgress = updateNeedsPolling(s.update);
+    renderUpdateButton(s.update);
+    const paths = {
+      wifi: 'WLAN',
+      ethernet: 'Ethernet',
+      cellular: 'Mobilfunk',
+      offline: 'Offline',
+    };
+    const currentFirmware = formatVersion(s.update.currentVersion) || '–';
+    const currentRecovery = formatVersion(s.update.recoveryVersion);
+    const currentWeb = formatVersion(s.update.currentWebVersion);
+    const bridge = s.appBridge || {};
+    const mione = s.mioneSystem || {};
+    const theApp = s.theApp || {};
+    const appClients = Array.isArray(theApp.clients) ? theApp.clients : [];
+    const activeClients = appClients.filter((client) => client.online);
+    const activeNames = activeClients
+      .map((client) => client.displayName || client.name || client.email || client.uid)
+      .filter(Boolean);
+    const activeNameText = activeNames.length
+      ? activeNames.slice(0, 3).join(', ') + (activeNames.length > 3 ? ' …' : '')
+      : '';
+    const heartbeatAge = heartbeatAgeText(mione.heartbeatAgeSeconds);
+    const mioneState =
+      mione.enabled === false ? 'deaktiviert' : s.mqtt ? 'online' : 'offline';
+    const heartbeatState =
+      mione.enabled === false ? 'aus' : mione.heartbeatState || 'wartet';
+    const appState = activeClients.length
+      ? `${activeClients.length} online`
+      : appClients.length
+      ? 'offline'
+      : 'wartet';
+    $('connectionState').classList.add('online');
+    $('connectionState').querySelector('span').textContent = 'Gerät verbunden';
+    $('connectionDetail').textContent =
+      `MIOne-System: ${mioneState} · Heartbeat: ${heartbeatState}${heartbeatAge ? ` (${heartbeatAge})` : ''} · ` +
+      `The_App: ${appState}${activeNameText ? ` (${activeNameText})` : ''} · ` +
+      `Bridge: ${bridge.online ? 'online' : 'offline'}`;
+    $('serialNumber').textContent = s.serialNumber || '–';
+    $('modemImei').textContent = s.modemImei || 'Nicht verfügbar';
+    $('modemType').value = s.modemModel || 'Nicht erkannt';
+    $('wifiStatus').textContent = s.wifiIp || 'Nicht verbunden';
+    $('ethernetStatus').textContent = s.ethernetIp || 'Nicht verbunden';
+    $('cellularStatus').textContent = s.cellular ? 'Verbunden' : 'Nicht verbunden';
+    $('mqttStatus').textContent =
+      mione.enabled === false ? 'Deaktiviert' : s.mqtt ? 'Verbunden' : 'Getrennt';
+    $('appBridgeStatus').textContent = activeClients.length
+      ? `${activeClients.length} online`
+      : bridge.online
+      ? `${bridge.source || 'The_App'} online`
+      : `${bridge.source || 'The_App'} offline`;
+    renderMqttConnection(
+      s.mqttConnection || {
+        connected: s.mqtt,
+        code: s.mqtt ? 0 : -1,
+        message: s.mqtt ? 'Verbunden' : 'Getrennt',
+        transport: '',
+      },
+    );
+    $('firmwareVersionStatus').textContent = currentFirmware;
+    $('dateTimeStatus').textContent = s.dateTime || '–';
+    $('internetStatus').textContent = paths[s.internet] || s.internet || '–';
+    $('currentFirmware').textContent = currentFirmware;
+    $('installedDetails').textContent =
+      `Recovery: ${currentRecovery || 'Noch nicht gestartet'} · Web: ${currentWeb || 'Nicht versioniert'}`;
+    const firmwareState = $('firmwareUpdateState');
+    const recoveryState = $('recoveryUpdateState');
+    const webState = $('webUpdateState');
+    firmwareState.textContent = s.update.firmwareAvailable
+      ? `Update ${formatVersion(s.update.version)} verfügbar`
+      : 'Aktuell';
+    recoveryState.textContent = s.update.recoveryAvailable
+      ? `Update ${formatVersion(s.update.recoveryTargetVersion)} verfügbar`
+      : 'Aktuell';
+    webState.textContent = s.update.webAvailable
+      ? `Update ${formatVersion(s.update.webTargetVersion)} verfügbar`
+      : 'Aktuell';
+    firmwareState.className = s.update.firmwareAvailable
+      ? 'update-available'
+      : 'update-current';
+    recoveryState.className = s.update.recoveryAvailable
+      ? 'update-available'
+      : 'update-current';
+    webState.className = s.update.webAvailable ? 'update-available' : 'update-current';
+    const progress =
+      (s.update.installing || s.update.downloading || s.update.checking || s.update.downloadQueued) &&
+      s.update.progress
+        ? ` (${s.update.progress}%)`
+        : '';
+    const ready =
+      s.update.available &&
+      s.update.downloaded &&
+      !s.update.autoInstall &&
+      !s.update.installing &&
+      !s.update.approved
+        ? ' · Dateien geladen'
+        : '';
+    $('updateMessage').textContent = s.update.failed
+      ? `Fehler: ${s.update.message || s.update.detail || 'Update fehlgeschlagen'}`
+      : `${s.update.message || 'Noch nicht geprüft'}${progress}${ready}${s.update.detail ? ` · ${s.update.detail}` : ''}`;
+    $('approveUpdate').hidden =
+      !s.update.available ||
+      !s.update.downloaded ||
+      s.update.failed ||
+      s.update.manualCheckRequired ||
+      s.update.checking ||
+      s.update.downloadQueued ||
+      s.update.installing ||
+      s.update.approved ||
+      s.update.downloading ||
+      s.update.autoInstall;
+    renderAppPresence(theApp);
+  } catch (error) {
+    if (otaInProgress && networkError(error)) {
+      reloadAfterReconnect = true;
+      $('connectionState').querySelector('span').textContent = 'OTA läuft / Gerät startet neu';
+      $('connectionDetail').textContent = 'Bitte warten …';
+      $('updateMessage').textContent = 'Verbindung während des Updates unterbrochen. Bitte warten …';
+      $('approveUpdate').hidden = true;
+      return;
+    }
+    $('connectionState').querySelector('span').textContent = 'Gerät nicht erreichbar';
+    $('connectionDetail').textContent = '–';
+    notify(error.message, true);
+  }
+}
 function secondsAsTime(seconds){seconds=Number(seconds);if(seconds===86400)seconds=0;const h=Math.floor(seconds/3600)%24,m=Math.floor(seconds%3600/60),s=seconds%60;return[h,m,s].map(v=>String(v).padStart(2,'0')).join(':')}
 function heartbeatAgeText(ageSeconds){const seconds=Number(ageSeconds);if(!Number.isFinite(seconds)||seconds<0)return'';if(seconds<2)return'gerade eben';if(seconds<60)return`vor ${Math.round(seconds)}s`;const minutes=Math.floor(seconds/60);return`vor ${minutes}m ${Math.round(seconds%60)}s`}
-function renderMioneLive(routing){const systemEnabled=routing.systemEnabled!==false,heartbeat=routing.heartbeat||{},heartbeatPanel=$('heartbeatStatus'),heartbeatAge=heartbeatAgeText(heartbeat.ageSeconds);heartbeatPanel.className=`mione-live ${systemEnabled?(heartbeat.online?'ok':heartbeat.received?'error':'waiting'):'disabled'}`;$('heartbeatTitle').textContent=systemEnabled?(heartbeat.online?`Aktiv${heartbeatAge?` · ${heartbeatAge}`:''}`:heartbeat.received?`Gestört${heartbeatAge?` · ${heartbeatAge}`:''}`:'Kein Signal'):'MIOne-System deaktiviert';$('heartbeatMessage').textContent=systemEnabled?`${heartbeat.message||'Noch nicht empfangen'} · ${heartbeat.topic||''}`:'System-ID ist nicht aktiv';const imei=routing.imeiCheck||{},imeiPanel=$('imeiMatchStatus');imeiPanel.className=`mione-live ${systemEnabled?(imei.matches?'ok':imei.received?'error':'waiting'):'disabled'}`;$('imeiMatchTitle').textContent=systemEnabled?(imei.matches?'IMEI stimmt überein':imei.received?'IMEI stimmt nicht überein':'Noch keine IMEI empfangen'):'MIOne-System deaktiviert';$('imeiMatchMessage').textContent=systemEnabled?`Lokal: ${imei.local||'–'} · MiOne: ${imei.configured||'–'} · ${imei.topic||''}`:'Alarmconfig aus System ist ausgeblendet'}
+function renderMioneLive(routing){const systemEnabled=routing.systemEnabled!==false,heartbeat=routing.heartbeat||{},heartbeatPanel=$('heartbeatStatus'),heartbeatAge=heartbeatAgeText(heartbeat.ageSeconds),heartbeatAgeSeconds=Number(heartbeat.ageSeconds),heartbeatWaiting=Number.isFinite(heartbeatAgeSeconds)&&heartbeatAgeSeconds>=0&&heartbeatAgeSeconds<=60;heartbeatPanel.className=`mione-live ${systemEnabled?(heartbeat.online?'ok':heartbeat.received&&(heartbeatWaiting||heartbeat.value)?'waiting':'error'):'disabled'}`;$('heartbeatTitle').textContent=systemEnabled?(heartbeat.online?`Aktiv${heartbeatAge?` · ${heartbeatAge}`:''}`:heartbeat.received?`${heartbeatWaiting?'Ausstehend':'Gestört'}${heartbeatAge?` · ${heartbeatAge}`:''}`:'Kein Signal'):'MIOne-System deaktiviert';$('heartbeatMessage').textContent=systemEnabled?`${heartbeat.message||'Noch nicht empfangen'} · ${heartbeat.topic||''}`:'System-ID ist nicht aktiv';const imei=routing.imeiCheck||{},imeiPanel=$('imeiMatchStatus');imeiPanel.className=`mione-live ${systemEnabled?(imei.matches?'ok':imei.received?'error':'waiting'):'disabled'}`;$('imeiMatchTitle').textContent=systemEnabled?(imei.matches?'IMEI stimmt überein':imei.received?'IMEI stimmt nicht überein':'Noch keine IMEI empfangen'):'MIOne-System deaktiviert';$('imeiMatchMessage').textContent=systemEnabled?`Lokal: ${imei.local||'–'} · MiOne: ${imei.configured||'–'} · ${imei.topic||''}`:'Alarmconfig aus System ist ausgeblendet'}
+function renderAppPresence(theApp){const container=$('appPresenceList'),count=$('appPresenceCount'),clients=Array.isArray(theApp?.clients)?theApp.clients:[],active=clients.filter(client=>client.online),activeCount=active.length,ordered=[...clients].sort((a,b)=>Number(Boolean(b.online))-Number(Boolean(a.online))||(()=>{const ageA=Number(a.ageSeconds);const ageB=Number(b.ageSeconds);const normA=Number.isFinite(ageA)&&ageA>=0?ageA:Number.MAX_SAFE_INTEGER;const normB=Number.isFinite(ageB)&&ageB>=0?ageB:Number.MAX_SAFE_INTEGER;return normA-normB;})());count.textContent=clients.length?`${activeCount}/${clients.length}`:'–';if(!container)return;if(!clients.length){container.innerHTML='<p class="empty">Noch keine App-Anmeldungen gefunden.</p>';return}container.innerHTML=ordered.map(client=>{const online=Boolean(client.online);const name=client.displayName||client.name||client.email||client.uid||client.installationId||'Unbekannt';const subtitle=[client.role==='owner'?'Hauptbenutzer':'Benutzer',client.email||'',client.uid||''].filter(Boolean).join(' · ');const status=online?'Online':'Offline';const age=heartbeatAgeText(client.ageSeconds);return `<div class="app-presence-item ${online?'online':'offline'}"><div class="app-presence-item-head"><div><b>${escapeHtml(name)}</b><div class="app-presence-tag"><span class="app-presence-dot"></span><span>${status}${age?` · ${escapeHtml(age)}`:''}</span></div></div><strong>${escapeHtml(client.installationId||'–')}</strong></div><small>${escapeHtml(subtitle||'Keine weiteren Angaben')}</small><small>Topic: ${escapeHtml(client.topic||'–')}</small></div>`}).join('')}
 async function loadAlarmRouting(){try{const routing=await api('/api/alarm-routing');renderMioneLive(routing);$('technicalWindow').textContent=`${secondsAsTime(routing.technicalFrom)} – ${secondsAsTime(routing.technicalUntil)}`;const sync=$('routingSync'),systemEnabled=routing.systemEnabled!==false;sync.className=`routing-sync ${systemEnabled?(routing.lastReceivedMs?'received':routing.subscriptionReady?'waiting':'error'):'disabled'}`;sync.querySelector('b').textContent=systemEnabled?(routing.lastReceivedMs?'Alarmconfig aus System empfangen':routing.subscriptionReady?'Warte auf Alarmconfig aus System':'System-ID fehlt / Topic nicht abonniert'):'MIOne-System deaktiviert';$('routingSyncMessage').textContent=systemEnabled?`${routing.syncMessage||'–'} · ${routing.sourceTopic||''}`:'Keine MQTT-Synchronisierung aktiv';$('mobileSlots').innerHTML=routing.mobileSlots.map(slot=>`<div class="mobile-slot${slot.active?' active':''}"><span class="slot-number">Slot ${slot.slot}<i></i></span><b>${escapeHtml(slot.number||'Nicht belegt')}</b><small>${slot.active?escapeHtml(slot.delivery):'Deaktiviert'}</small></div>`).join('')}catch(error){if(otaInProgress&&networkError(error))return;$('mobileSlots').innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`}}
 
 async function loadFiles(){const list=$('fileList');$('currentPath').textContent=currentDirectory;$('parentDirectory').hidden=currentDirectory==='/www'||currentDirectory==='/firmware';list.innerHTML='<p class="empty">Dateiliste wird geladen …</p>';try{const data=await api(`/api/files?path=${encodeURIComponent(currentDirectory)}`);const storage=data.storage||{},storageItems=$('storageStatus').querySelectorAll('strong');storageItems[0].textContent=formatBytes(storage.total||0);storageItems[1].textContent=formatBytes(storage.used||0);storageItems[2].textContent=formatBytes(storage.free||0);const files=(data.files||[]).filter(file=>!file.name.startsWith('.')).sort((a,b)=>Number(b.directory)-Number(a.directory)||a.name.localeCompare(b.name,'de',{sensitivity:'base'}));if(!files.length){list.innerHTML='<p class="empty">Dieser Ordner ist leer.</p>';return}list.innerHTML='<div class="file-head"><span>Name</span><span>Größe</span><span>Aktionen</span></div>'+files.map(file=>{const path=file.path||(file.name.startsWith('/')?file.name:`${currentDirectory}/${file.name}`);const encoded=encodeURIComponent(path);const icon=file.directory?'DIR':'FILE';const detail=file.directory?'Ordner':fileType(file.name);const actions=file.directory?`<button type="button" data-open="${encoded}">Öffnen</button>`:`<a href="/api/file?path=${encoded}">Herunterladen</a><button type="button" data-delete="${encoded}">Löschen</button>`;return `<div class="file-row"><div class="file-name"><i class="${file.directory?'folder':'document'}">${icon}</i><span><b>${escapeHtml(file.name)}</b><small>${detail}</small></span></div><span class="file-size">${file.directory?'–':formatBytes(file.size)}</span><div class="file-actions">${actions}</div></div>`}).join('')}catch(error){list.innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`}}
@@ -168,6 +302,7 @@ $('updateChannel').addEventListener('change',updateManifestForChannel);
 document.querySelectorAll('.reveal').forEach(button=>button.addEventListener('click',()=>{const input=button.previousElementSibling;const visible=input.type==='text';input.type=visible?'password':'text';button.textContent=visible?'Anzeigen':'Verbergen'}));
 document.querySelectorAll('.sidebar a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));link.classList.add('active');const id=link.getAttribute('href')?.slice(1);if(id)openSection(id)}));
 $('configForm').addEventListener('submit',async event=>{event.preventDefault();if(configSnapshot()===loadedSnapshot){updateSaveBar();return}if(!event.currentTarget.reportValidity())return;const button=$('saveButton');button.disabled=true;button.textContent='Wird gespeichert …';try{await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});loadedSnapshot=configSnapshot();updateSaveBar();button.disabled=false;button.textContent='Konfiguration speichern';notify('Konfiguration gespeichert. Das Gerät startet neu.')}catch(error){notify(error.message,true);button.disabled=false;button.textContent='Konfiguration speichern'}});
+$('pushTestButton').addEventListener('click',async()=>{const button=$('pushTestButton');button.disabled=true;button.textContent='Push Service Test wird gesendet …';try{await api('/api/push/test',{method:'POST'});notify('Push Service Test wurde an den MQTT-Server gesendet.');}catch(error){notify(error.message,true)}finally{button.disabled=false;button.textContent='Push Service Test senden'}});
 $('checkUpdate').addEventListener('click',async()=>{const button=$('checkUpdate');button.disabled=true;button.textContent='Prüfung in Arbeit …';$('updateMessage').textContent='Firmwareprüfung wurde gestartet · Manifest wird angefordert';otaInProgress=true;try{await api('/api/firmware/check',{method:'POST'});notify('Firmwareprüfung wurde gestartet.');scheduleUpdatePoll(300)}catch(error){otaInProgress=false;button.disabled=false;button.textContent='Jetzt prüfen';notify(error.message,true)}});
 $('approveUpdate').addEventListener('click',async()=>{if(!confirm('Firmwareupdate jetzt laden und installieren?'))return;otaInProgress=true;$('approveUpdate').hidden=true;$('updateMessage').textContent='Update wurde freigegeben. Gerät lädt und installiert …';try{await api('/api/firmware/approve',{method:'POST'});notify('Update bestätigt. Download wird gestartet.');scheduleUpdatePoll(500)}catch(error){if(networkError(error)){reloadAfterReconnect=true;notify('Freigabe gesendet. Das Gerät ist vermutlich bereits im Update.');scheduleUpdatePoll(1000);return}otaInProgress=false;notify(error.message,true)}});
 $('modemFactoryReset').addEventListener('click',async()=>{if(!confirm('Modem wirklich in den Auslieferungszustand versetzen? APN- und Modemeinstellungen im Modul werden zurückgesetzt.'))return;const button=$('modemFactoryReset');button.disabled=true;button.textContent='Modem wird zurückgesetzt …';try{await api('/api/modem/factory-reset',{method:'POST'});notify('Modem wurde in den Auslieferungszustand versetzt.');setTimeout(loadStatus,1500)}catch(error){notify(error.message,true)}finally{button.disabled=false;button.textContent='Modem-Auslieferungszustand'}});
