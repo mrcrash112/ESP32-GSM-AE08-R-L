@@ -6,6 +6,7 @@
 #include <SPI.h>
 #include <Update.h>
 #include <Wire.h>
+#include <time.h>
 #include <esp_ota_ops.h>
 
 #include "BoardPins.h"
@@ -18,10 +19,22 @@ bool displayReady = false;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 uint32_t lastDisplayUpdate = 0;
 
+String currentRecoveryLogPath() {
+  time_t nowEpoch = time(nullptr);
+  struct tm local {};
+  if (nowEpoch < 946684800) return "/logs/system-boot.csv";
+  localtime_r(&nowEpoch, &local);
+  if (local.tm_year + 1900 < 2020) return "/logs/system-boot.csv";
+  char text[40];
+  snprintf(text, sizeof(text), "/logs/system-%04u-%02u-%02u.csv",
+           local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
+  return String(text);
+}
+
 void appendRecoveryLog(const String &event, const String &details) {
   if (!sdMounted) return;
   SD.mkdir("/logs");
-  File logFile = SD.open("/logs/system.csv", FILE_APPEND);
+  File logFile = SD.open(currentRecoveryLogPath(), FILE_APPEND);
   if (!logFile) return;
   if (logFile.size() == 0) logFile.print("timestamp;event;details\n");
   logFile.print("recovery;");

@@ -134,6 +134,7 @@ String modemActivityNumber;
 uint32_t modemActivityUntil = 0;
 String pendingSystemLog;
 uint32_t lastSystemLogWrite = 0;
+uint32_t lastSystemLogCleanupKey = 0;
 uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
@@ -147,6 +148,7 @@ uint32_t digitalInputPendingAt[4] = {};
 constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
+constexpr uint8_t kLogRetentionDays = 30;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
@@ -165,6 +167,10 @@ bool isPowerCycleReset();
 bool waitForBootImei(uint8_t progress, uint32_t timeoutMs);
 void maintainBootImeiRecovery();
 void maintainCommunicationSupervisor();
+String currentSystemLogPath();
+int32_t civilDateToDays(int year, int month, int day);
+bool parseSystemLogDateKey(const String &path, int32_t &daysSinceEpoch);
+void pruneOldSystemLogs();
 
 struct UpdateState {
   bool available = false;
@@ -1371,6 +1377,71 @@ String utcTimestamp() {
   return text;
 }
 
+String currentSystemLogPath() {
+  if (!rtcReady) return "/logs/system-boot.csv";
+  DateTime now = rtc.now();
+  char text[40];
+  snprintf(text, sizeof(text), "/logs/system-%04u-%02u-%02u.csv",
+           now.year(), now.month(), now.day());
+  return String(text);
+}
+
+int32_t civilDateToDays(int year, int month, int day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int32_t>(doe) - 719468;
+}
+
+bool parseSystemLogDateKey(const String &path, int32_t &daysSinceEpoch) {
+  String name = path;
+  int slash = name.lastIndexOf('/');
+  if (slash >= 0) name = name.substring(slash + 1);
+  if (name == "system.csv" || name == "system-boot.csv") return false;
+  if (!name.startsWith("system-") || !name.endsWith(".csv")) return false;
+  String datePart = name.substring(7, name.length() - 4);
+  if (datePart.length() != 10 || datePart.charAt(4) != '-' || datePart.charAt(7) != '-') return false;
+  int year = datePart.substring(0, 4).toInt();
+  int month = datePart.substring(5, 7).toInt();
+  int day = datePart.substring(8, 10).toInt();
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  daysSinceEpoch = civilDateToDays(year, month, day);
+  return true;
+}
+
+void pruneOldSystemLogs() {
+  if (!sdReady || !rtcReady) return;
+  DateTime now = rtc.now();
+  uint32_t todayKey = static_cast<uint32_t>(now.year()) * 10000UL +
+                      static_cast<uint32_t>(now.month()) * 100UL +
+                      static_cast<uint32_t>(now.day());
+  if (lastSystemLogCleanupKey == todayKey) return;
+  lastSystemLogCleanupKey = todayKey;
+
+  int32_t todayDays = civilDateToDays(now.year(), now.month(), now.day());
+  File root = SD.open("/logs");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return;
+  }
+
+  for (File entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+    String path = entry.name();
+    bool isDirectory = entry.isDirectory();
+    entry.close();
+    if (isDirectory) continue;
+    if (!path.startsWith("/")) path = "/logs/" + path;
+    int32_t logDays = 0;
+    if (!parseSystemLogDateKey(path, logDays)) continue;
+    if (todayDays - logDays >= kLogRetentionDays) {
+      SD.remove(path);
+    }
+  }
+  root.close();
+}
+
 String cleanLogValue(String value) {
   value.replace(';', ',');
   value.replace('\r', ' ');
@@ -1661,8 +1732,10 @@ void maintainSystemLog(bool force = false) {
                   ",heap=" + String(ESP.getFreeHeap());
   queueSystemLog("STATUS", status);
 
+  pruneOldSystemLogs();
   SD.mkdir("/logs");
-  File logFile = SD.open("/logs/system.csv", FILE_APPEND);
+  String logPath = currentSystemLogPath();
+  File logFile = SD.open(logPath, FILE_APPEND);
   if (!logFile) return;
   if (logFile.size() == 0) logFile.print("timestamp;event;details\n");
   String batch = pendingSystemLog;
@@ -1675,7 +1748,7 @@ void maintainSystemLog(bool force = false) {
   }
 }
 
-String readSystemLogTail(uint16_t limit, String &error) {
+String readSystemLogTail(const String &path, uint16_t limit, String &error) {
   if (!sdReady) {
     error = "SD-Karte nicht verfuegbar";
     return "";
@@ -1684,7 +1757,7 @@ String readSystemLogTail(uint16_t limit, String &error) {
   if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
 
   digitalWrite(BoardPins::ethernetCs, HIGH);
-  File logFile = SD.open("/logs/system.csv", FILE_READ);
+  File logFile = SD.open(path, FILE_READ);
   if (!logFile) {
     error = "Systemprotokoll konnte nicht geoeffnet werden";
     return "";
@@ -1895,7 +1968,7 @@ void setupWeb() {
     JsonObject logging = doc.createNestedObject("logging");
     logging["intervalSeconds"] = config.logIntervalSeconds;
     logging["pendingBytes"] = pendingSystemLog.length();
-    logging["path"] = "/logs/system.csv";
+    logging["path"] = currentSystemLogPath();
     doc["dateTime"] = clockText();
     doc["internet"] = WiFi.status() == WL_CONNECTED ? "wifi" :
                       (ethernetReady && Ethernet.linkStatus() == LinkON) ? "ethernet" :
@@ -2041,12 +2114,22 @@ void setupWeb() {
   web.on("/api/logs", HTTP_GET, [] {
     if (!authorized()) return;
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
-    if (!SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     int limit = web.arg("limit").toInt();
     if (limit < 1) limit = 100;
     if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
+    String path = safePath(web.arg("file"));
+    if (path.isEmpty()) path = currentSystemLogPath();
+    if (!path.startsWith("/logs/")) path = currentSystemLogPath();
+    if (!SD.exists(path)) {
+      if (path == currentSystemLogPath()) {
+        web.sendHeader("Cache-Control", "no-store, max-age=0");
+        web.send(200, "text/plain; charset=utf-8", "");
+        return;
+      }
+      return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
+    }
     String error;
-    String body = readSystemLogTail(static_cast<uint16_t>(limit), error);
+    String body = readSystemLogTail(path, static_cast<uint16_t>(limit), error);
     if (!error.isEmpty()) return errorResponse(500, error);
     web.sendHeader("Cache-Control", "no-store, max-age=0");
     web.send(200, "text/plain; charset=utf-8", body);
