@@ -134,6 +134,8 @@ String modemActivityNumber;
 uint32_t modemActivityUntil = 0;
 String pendingSystemLog;
 uint32_t lastSystemLogWrite = 0;
+bool lastSystemLogHealthy = true;
+String lastSystemLogIssues;
 uint32_t lastSystemLogCleanupKey = 0;
 uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
@@ -149,6 +151,7 @@ constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
 constexpr uint8_t kLogRetentionDays = 30;
+constexpr uint32_t kBootImeiWaitMs = 8000UL;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
@@ -1711,27 +1714,62 @@ bool updateNetworkReady() {
   return modem.packetDataConnected();
 }
 
-void maintainSystemLog(bool force = false) {
-  if (!sdReady) return;
-  uint32_t interval = static_cast<uint32_t>(config.logIntervalSeconds) * 1000UL;
-  if (!force && millis() - lastSystemLogWrite < interval) return;
+String systemStatusIssues() {
+  String issues;
+  auto addIssue = [&](const char *issue) {
+    if (!issues.isEmpty()) issues += ",";
+    issues += issue;
+  };
+
+  if (!accessPoint && activeNetworkName() == "offline") addIssue("network");
+  if ((config.mqttEnabled || config.mqttServiceEnabled) && !mqttConnectedAny()) addIssue("mqtt");
+  if (config.cellularEnabled && modem.imei().isEmpty()) addIssue("imei");
+  if (!sdReady) addIssue("sd");
+  if (!rtcReady) addIssue("rtc");
+  return issues;
+}
+
+String systemStatusDetails() {
   String ip = accessPoint ? WiFi.softAPIP().toString() :
               (ethernetReady && Ethernet.linkStatus() == LinkON ? Ethernet.localIP().toString() :
                (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "0.0.0.0"));
-  String status = "network=" + activeNetworkName() + ",ip=" + ip +
-                  ",wifiRssi=" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
-                  ",cellCsq=" + String(modem.signalQuality()) +
-                  ",cellDbm=" + String(modem.signalQuality() >= 0 && modem.signalQuality() <= 31
-                                            ? -113 + 2 * modem.signalQuality() : 0) +
-                  ",operator=" + modem.networkOperator() +
-                  ",registered=" + String(modem.connected() ? 1 : 0) +
-                  ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
-                  ",mqtt=" + String(mqttConnectedAny() ? 1 : 0) +
-                  ",sd=1,rtc=" + String(rtcReady ? 1 : 0) +
-                  ",buttonAvg=" + String(currentButtonAdc) +
-                  ",heap=" + String(ESP.getFreeHeap());
-  queueSystemLog("STATUS", status);
+  return "network=" + activeNetworkName() + ",ip=" + ip +
+         ",wifiRssi=" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
+         ",cellCsq=" + String(modem.signalQuality()) +
+         ",cellDbm=" + String(modem.signalQuality() >= 0 && modem.signalQuality() <= 31
+                                   ? -113 + 2 * modem.signalQuality() : 0) +
+         ",operator=" + modem.networkOperator() +
+         ",registered=" + String(modem.connected() ? 1 : 0) +
+         ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
+         ",mqtt=" + String(mqttConnectedAny() ? 1 : 0) +
+         ",sd=" + String(sdReady ? 1 : 0) +
+         ",rtc=" + String(rtcReady ? 1 : 0) +
+         ",buttonAvg=" + String(currentButtonAdc) +
+         ",heap=" + String(ESP.getFreeHeap());
+}
 
+void maintainSystemLog(bool force = false) {
+  if (!sdReady) return;
+  String issues = systemStatusIssues();
+  bool healthy = issues.isEmpty();
+  bool shouldLog = false;
+  if (!force) {
+    if (healthy) {
+      shouldLog = !lastSystemLogHealthy;
+    } else {
+      uint16_t repeatSeconds = config.logIntervalSeconds < 10 ? 10 : config.logIntervalSeconds;
+      uint32_t interval = static_cast<uint32_t>(repeatSeconds) * 1000UL;
+      shouldLog = !lastSystemLogHealthy || issues != lastSystemLogIssues || millis() - lastSystemLogWrite >= interval;
+    }
+  }
+  if (shouldLog) {
+    queueSystemLog(healthy ? "STATUS_OK" : "STATUS_ERROR",
+                   healthy ? systemStatusDetails() : systemStatusDetails() + ",issues=" + issues);
+    lastSystemLogHealthy = healthy;
+    lastSystemLogIssues = issues;
+  }
+
+  if (pendingSystemLog.isEmpty()) return;
   pruneOldSystemLogs();
   SD.mkdir("/logs");
   String logPath = currentSystemLogPath();
@@ -3482,7 +3520,7 @@ void setup() {
   showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
   SystemRuntime::kickWatchdog();
-  if (!waitForBootImei(82, 1500)) {
+  if (!waitForBootImei(82, kBootImeiWaitMs)) {
     return;
   }
   showBootStatus("Mobilfunkmodem", 82,
