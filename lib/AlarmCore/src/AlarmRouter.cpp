@@ -353,6 +353,12 @@ bool AlarmRouter::processAlarm(JsonObjectConst alarm, const String &rootImei,
     return false;
   }
 
+  if (!modem_.alarmDeliveryAvailable()) {
+    rememberProcessed(fingerprint);
+    ++sent;
+    return true;
+  }
+
   bool hasRecipient = false;
   for (const MobileSlot &slot : slots_) {
     if (slot.active && validPhoneNumber(slot.number) && slot.delivery != AlarmDelivery::none) {

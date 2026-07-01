@@ -33,6 +33,7 @@ struct DeviceConfig {
   String wifiSsid;
   String wifiPassword;
   IPv4Config wifiIp;
+  String mdnsName;
 
   bool ethernetEnabled = false;
   IPv4Config ethernetIp;
@@ -53,6 +54,8 @@ struct DeviceConfig {
   String mqttUser;
   String mqttPassword;
   String mqttBaseTopic = "mione";
+  bool mqttServiceEnabled = false;
+  String mqttTopTopic;
 
   bool offlineTcpEnabled = false;
   String offlineTcpHost;

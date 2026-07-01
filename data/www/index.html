@@ -16,7 +16,7 @@
         <h1>Mione Alarmmelder</h1>
         <p>Gerätekonfiguration und Systemstatus</p>
       </div>
-      <div class="connection" id="connectionState"><i></i><span>Verbindung wird geprüft</span></div>
+      <div class="connection" id="connectionState"><i></i><div class="connection-text"><span>Verbindung wird geprüft</span><small id="connectionDetail">–</small></div></div>
     </div>
   </header>
 
@@ -25,6 +25,7 @@
       <a href="#overview" class="active">Übersicht</a>
       <a href="#network">Netzwerk</a>
       <a href="#cellular">Mobilfunk</a>
+      <a href="#mione">MIOne</a>
       <a href="#services">Dienste</a>
       <a href="#alarm-inputs">Alarm eingänge</a>
       <a href="#hardware">Hardware</a>
@@ -46,7 +47,8 @@
           <div class="status-item"><span>WLAN-IP</span><strong id="wifiStatus">–</strong></div>
           <div class="status-item"><span>Ethernet-IP</span><strong id="ethernetStatus">–</strong></div>
           <div class="status-item"><span>Mobilfunk</span><strong id="cellularStatus">–</strong></div>
-          <div class="status-item"><span>MQTT</span><strong id="mqttStatus">–</strong></div>
+          <div class="status-item"><span>MIOne-System</span><strong id="mqttStatus">–</strong></div>
+          <div class="status-item"><span>The_App / Bridge</span><strong id="appBridgeStatus">–</strong></div>
           <div class="status-item"><span>Firmware</span><strong id="firmwareVersionStatus">–</strong></div>
           <div class="status-item"><span>Datum und Uhrzeit</span><strong id="dateTimeStatus">–</strong></div>
           <div class="status-item"><span>Internetweg</span><strong id="internetStatus">–</strong></div>
@@ -55,7 +57,7 @@
 
       <form id="configForm" autocomplete="off">
         <section class="card" id="network">
-          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN und kabelgebundene Verbindung konfigurieren.</p></div></div>
+          <div class="section-heading"><div><span class="step">01</span><h2>Netzwerk</h2><p>WLAN, Ethernet und den Hostnamen für das lokale Netz konfigurieren.</p></div></div>
 
           <div class="subsection" data-feature="wifi">
             <div class="subsection-title"><div><h3>WLAN</h3><p>Drahtloses Netzwerk für Webserver und MQTT.</p></div><label class="switch"><input id="wifiEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
@@ -72,6 +74,13 @@
               <label><span>Gateway</span><input id="wifiGateway" inputmode="decimal" placeholder="192.168.1.1"></label>
               <label><span>Subnetzmaske</span><input id="wifiSubnet" inputmode="decimal" placeholder="255.255.255.0"></label>
               <label><span>DNS-Server</span><input id="wifiDns" inputmode="decimal" placeholder="1.1.1.1"></label>
+            </div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title"><div><h3>Hostname</h3><p>Der Name wird im Netz als <code>.local</code>-Adresse veröffentlicht.</p></div></div>
+            <div class="fields two">
+              <label class="wide"><span>Hostname / mDNS-Name</span><input id="mdnsName" type="text" maxlength="63" placeholder="alarm-12345678"><small>Ohne <code>.local</code>. Erlaubt sind Buchstaben, Zahlen und Bindestriche.</small></label>
             </div>
           </div>
 
@@ -102,28 +111,56 @@
           <div class="actions modem-actions"><button type="button" class="button danger" id="modemFactoryReset">Modem-Auslieferungszustand</button></div>
         </section>
 
+        <section class="card" id="mione" data-feature="mqtt">
+          <div class="section-heading"><div><span class="step">03</span><h2>MIOne Anbindung</h2><p>System-ID, ModemStatus und Alarmconfig aus dem System.</p></div></div>
+          <div class="section-switch-row mione"><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
+          <div class="mqtt-connection waiting" id="mqttConnection">
+            <i></i><div class="connection-text"><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
+          </div>
+          <div class="mione-live-grid">
+            <div class="mione-live waiting" id="heartbeatStatus"><i></i><div><span>MiOne Heartbeat</span><strong id="heartbeatTitle">Warte auf Signal</strong><small id="heartbeatMessage">–</small></div></div>
+            <div class="mione-live waiting" id="imeiMatchStatus"><i></i><div><span>IMEI-Abgleich</span><strong id="imeiMatchTitle">Warte auf Konfiguration</strong><small id="imeiMatchMessage">–</small></div></div>
+          </div>
+          <div class="fields two">
+            <label class="wide"><span>System-ID</span><input id="mqttBaseTopic" type="text" maxlength="128" placeholder="mione"><small>Muss gesetzt sein, wenn MIOne aktiv ist. Ohne Aktivierung bleibt das Feld optional.</small></label>
+          </div>
+          <div class="alarm-routing">
+            <div class="routing-head"><div><h4>Alarmconfig aus System</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
+            <div class="routing-sync" id="routingSync"><i></i><span><b>Synchronisierung wird geprüft</b><small id="routingSyncMessage">–</small></span></div>
+            <div class="mobile-slots" id="mobileSlots"><p class="empty">Mobilfunknummern werden geladen …</p></div>
+          </div>
+          <div class="app-presence">
+            <div class="routing-head">
+              <div>
+                <h4>Aktive App-Anmeldungen</h4>
+                <p>Jede Installation meldet sich unter <code>&lt;system-id&gt;/the_app/&lt;uuid&gt;/presence</code>.</p>
+              </div>
+              <div><span>Online</span><strong id="appPresenceCount">–</strong></div>
+            </div>
+            <div class="app-presence-list" id="appPresenceList"><p class="empty">Noch keine App-Anmeldungen gefunden.</p></div>
+          </div>
+          <div class="subsection">
+            <div class="subsection-title"><div><h3>Alarmfortschritt</h3><p>Alarmcode, Rufnummer, SMS/Anruf und Ergebnis an den MiOne-PC melden.</p></div><label class="switch"><input id="alarmProgressEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
+          </div>
+        </section>
+
         <section class="card" id="services">
-          <div class="section-heading"><div><span class="step">03</span><h2>Dienste</h2><p>MQTT-Anbindung und TCP-Socket Direktverbindung.</p></div></div>
-          <div class="subsection" data-feature="mqtt">
-            <div class="subsection-title"><div><h3>MQTT</h3><p>Kommunikation mit Mione und dem zentralen Broker.</p></div><label class="switch"><input id="mqttEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
-            <div class="mqtt-connection waiting" id="mqttConnection">
-              <i></i><div><span>Verbindungsstatus</span><strong id="mqttConnectionTitle">Status wird geladen</strong><small id="mqttConnectionMessage">Verbindung zum Gerät wird geprüft …</small></div><code id="mqttConnectionCode">–</code>
-            </div>
-            <div class="mione-live-grid">
-              <div class="mione-live waiting" id="heartbeatStatus"><i></i><div><span>MiOne Heartbeat</span><strong id="heartbeatTitle">Warte auf Signal</strong><small id="heartbeatMessage">–</small></div></div>
-              <div class="mione-live waiting" id="imeiMatchStatus"><i></i><div><span>IMEI-Abgleich</span><strong id="imeiMatchTitle">Warte auf Konfiguration</strong><small id="imeiMatchMessage">–</small></div></div>
-            </div>
+          <div class="section-heading"><div><span class="step">04</span><h2>Dienste MQTT</h2><p>Zusätzlicher Topic-Weg für Home Assistant, HEMS und andere Dienste.</p></div></div>
+          <div class="subsection" id="mqttBrokerSection" data-feature="mqttService">
+            <div class="subsection-title"><div><h3>MQTT Broker</h3><p>Broker-Daten für den zweiten MQTT-Pfad und die Dienste-Anbindung. Nur bei Bedarf aktivieren.</p></div><label class="switch"><input id="mqttServiceEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
             <div class="fields two">
               <label><span>Broker / Hostname</span><input id="mqttHost" type="text" maxlength="128" placeholder="mqtt.example.de"></label>
               <label><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
               <label><span>Benutzername</span><input id="mqttUser" type="text" maxlength="64" placeholder="Optional"></label>
               <label><span>Passwort</span><div class="password"><input id="mqttPassword" type="password" maxlength="128" placeholder="Gespeichertes Passwort beibehalten"><button type="button" class="reveal" aria-label="Passwort anzeigen">Anzeigen</button></div></label>
             </div>
-            <div class="alarm-routing">
-              <div class="routing-head"><div><h4>Alarmempfänger aus MiOne</h4><p>Retained MQTT-Konfiguration, lokal nur lesbar.</p></div><div><span>Technical-Zeitfenster</span><strong id="technicalWindow">–</strong></div></div>
-              <div class="routing-sync" id="routingSync"><i></i><span><b>Synchronisierung wird geprüft</b><small id="routingSyncMessage">–</small></span></div>
-              <div class="mobile-slots" id="mobileSlots"><p class="empty">Mobilfunknummern werden geladen …</p></div>
+            <div class="fields two">
+              <label class="wide"><span>TopTopic</span><input id="mqttTopTopic" type="text" maxlength="128" placeholder="homeassistant/mione"><small>Wird nur aktiv benutzt, wenn der Dienste-Broker eingeschaltet ist.</small></label>
             </div>
+          </div>
+          <div class="subsection" id="pushSection">
+            <div class="subsection-title"><div><h3>Push-Benachrichtigung</h3><p>Push Service Test an die in der App aktivierten Benutzer des aktuellen Systems senden.</p></div></div>
+            <button type="button" id="pushTestButton">Push Service Test senden</button>
           </div>
           <div class="subsection" data-feature="offlineTcp">
             <div class="subsection-title"><div><h3>TCP-Socket Direktverbindung</h3><p>Direkter Befehlskanal im lokalen WLAN oder Ethernet.</p></div><label class="switch"><input id="offlineTcpEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
@@ -133,35 +170,32 @@
               <label><span>Befehls-Secret</span><div class="password"><input id="commandSecret" type="password" minlength="8" maxlength="128" placeholder="Gespeichertes Secret beibehalten"><button type="button" class="reveal" aria-label="Secret anzeigen">Anzeigen</button></div><small>Mindestens 8 Zeichen.</small></label>
             </div>
           </div>
-          <div class="subsection">
-            <div class="subsection-title"><div><h3>Alarmfortschritt</h3><p>Alarmcode, Rufnummer, SMS/Anruf und Ergebnis an den MiOne-PC melden.</p></div><label class="switch"><input id="alarmProgressEnabled" type="checkbox"><span></span><b>Aktiv</b></label></div>
-          </div>
         </section>
 
         <section class="card" id="alarm-inputs">
-          <div class="section-heading"><div><span class="step">04</span><h2>Alarm eingänge</h2><p>Lokale digitale Eingänge und ihre Alarmierungswege.</p></div></div>
+          <div class="section-heading"><div><span class="step">05</span><h2>Alarm eingänge</h2><p>Lokale digitale Eingänge und ihre Alarmierungswege.</p></div></div>
           <div class="input-alarm-grid" id="alarmInputs"></div>
         </section>
 
         <section class="card" id="hardware">
-          <div class="section-heading"><div><span class="step">05</span><h2>Hardware</h2><p>Lokale Komponenten einzeln ein- oder ausschalten.</p></div></div>
+          <div class="section-heading"><div><span class="step">06</span><h2>Hardware</h2><p>Lokale Komponenten einzeln ein- oder ausschalten.</p></div></div>
           <div class="toggle-grid">
             <label><input id="sdEnabled" type="checkbox"><span><b>SD-Karte</b><small>Webseiten, Protokolle und Updates</small></span></label>
             <label><input id="rtcEnabled" type="checkbox"><span><b>RTC DS3231</b><small>Uhrzeit mit Batteriebackup</small></span></label>
             <label><input id="displayEnabled" type="checkbox"><span><b>OLED-Display</b><small>Status direkt am Gerät</small></span></label>
           </div>
           <div class="subsection">
-            <div class="subsection-title"><div><h3>Systemprotokoll</h3><p>Status, Neustarts, Signalstärken, Mobilfunknetz und Alarmversand auf der SD-Karte.</p></div></div>
+            <div class="subsection-title"><div><h3>Systemprotokoll</h3><p>Fehler, Neustarts und wichtige Zustandswechsel auf der SD-Karte.</p></div></div>
             <div class="fields two">
-              <label><span>Schreibintervall</span><input id="logIntervalSeconds" type="number" min="10" max="3600" step="1" value="10"><small>Mindestens 10 Sekunden zum Schutz der SD-Karte.</small></label>
-              <label><span>Logdatei</span><input type="text" value="/logs/system.csv" readonly><small>Über die Dateiverwaltung abrufbar.</small></label>
+              <label><span>Fehlerintervall</span><input id="logIntervalSeconds" type="number" min="10" max="3600" step="1" value="10"><small>Gleichbleibende Fehler werden frühestens nach diesem Abstand erneut geschrieben.</small></label>
+              <label><span>Logdatei</span><input type="text" value="Aktuelle Tageslogdatei" readonly><small>Wird täglich automatisch gewechselt und ist über die Dateiverwaltung abrufbar.</small></label>
             </div>
             <div class="actions log-actions"><a class="button secondary" href="/logs.html?limit=100" target="_blank" rel="noopener">Letzte Logeinträge anzeigen</a></div>
           </div>
         </section>
 
         <section class="card" id="security">
-          <div class="section-heading"><div><span class="step">06</span><h2>Gerät und Zugang</h2><p>Name des Alarmmelders und Zugang zum Webserver.</p></div></div>
+          <div class="section-heading"><div><span class="step">07</span><h2>Gerät und Zugang</h2><p>Name des Alarmmelders und Zugang zum Webserver.</p></div></div>
           <div class="fields two">
             <label><span>Geräte-ID</span><input id="deviceId" type="text" required maxlength="48"></label>
             <label><span>Web-Benutzer</span><input id="webUser" type="text" required maxlength="32" autocomplete="username"></label>
@@ -171,10 +205,14 @@
             <div><h3>NVS Werkseinstellungen</h3><p>Alle im NVS gespeicherten Parameter inklusive WLAN-Daten, Zugangsdaten, Update-Sperren und Alarmempfänger werden gelöscht.</p></div>
             <button type="button" class="button danger" id="nvsFactoryReset">NVS löschen</button>
           </div>
+          <div class="actions" style="margin-top:16px">
+            <button type="button" class="button secondary" id="systemReboot">Gerät neu starten</button>
+          </div>
         </section>
 
         <section class="card" id="updates" data-feature="updates">
-          <div class="section-heading"><div><span class="step">07</span><h2>Firmware</h2><p>Neue Versionen sicher von GitHub prüfen und freigeben.</p></div><label class="switch"><input id="updateCheckEnabled" type="checkbox"><span></span><b>Automatisch prüfen</b></label></div>
+          <div class="section-heading"><div><span class="step">08</span><h2>Firmware</h2><p>Neue Versionen sicher von GitHub prüfen und freigeben.</p></div></div>
+          <div class="section-switch-row"><label class="switch"><input id="updateCheckEnabled" type="checkbox"><span></span><b>Automatisch prüfen</b></label></div>
           <div class="fields two">
             <label class="wide"><span>GitHub-Manifest-URL</span><input id="updateManifestUrl" type="url" maxlength="240" placeholder="https://raw.githubusercontent.com/…/firmware.json"></label>
             <label><span>Firmware-Kanal</span><select id="updateChannel"><option value="stable">Stable</option><option value="beta">Beta</option></select><small>Beta lädt Testversionen aus dem Beta-Kanal.</small></label>

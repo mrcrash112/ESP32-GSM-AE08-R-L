@@ -15,7 +15,10 @@
   </header>
   <main class="wrap">
     <section class="toolbar">
-      <div><span>Logdatei</span><strong>/logs/system.csv</strong></div>
+      <label>
+        <span>Logdatei</span>
+        <select id="logFile"></select>
+      </label>
       <label><span>Anzahl Einträge</span><input id="limit" type="number" min="1" max="150" value="100"></label>
       <button id="refresh" type="button">Aktualisieren</button>
     </section>

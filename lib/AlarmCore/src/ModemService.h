@@ -21,11 +21,14 @@ class ModemService {
   bool connected() const { return registered_; }
   bool packetDataConnected() const { return packetDataConnected_; }
   bool mqttConnected() const { return mqttConnected_; }
+  bool simReady() const { return simReady_; }
+  bool alarmDeliveryAvailable() const { return enabled_ && registered_ && simReady_; }
   int signalQuality() const { return signalQuality_; }
   String modemName() const { return modemName_; }
   String model() const { return modemType_; }
   String imei() const { return imei_; }
   String networkOperator() const { return networkOperator_; }
+  void resetHardware();
 
  private:
   bool command(const String &value, const char *expected, uint32_t timeout = 2000);
@@ -43,6 +46,7 @@ class ModemService {
   bool mqttPublishSim7500(const String &topic, const String &payload, bool retain, String &error);
   bool writePromptPayload(const String &command, const String &payload, String &answer,
                           uint32_t promptTimeout = 10000, uint32_t finalTimeout = 10000);
+  bool refreshImei(uint32_t timeout = 1500);
   void pollStatus();
 
   HardwareSerial serial_{2};
@@ -58,7 +62,9 @@ class ModemService {
   String apnUser_;
   String apnPassword_;
   uint32_t lastPoll_ = 0;
+  uint32_t lastImeiAttempt_ = 0;
   uint32_t lastDataAttempt_ = 0;
   bool mqttConnected_ = false;
   bool simMqttStarted_ = false;
+  bool simReady_ = false;
 };

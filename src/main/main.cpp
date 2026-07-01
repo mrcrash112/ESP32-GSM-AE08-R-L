@@ -29,6 +29,7 @@
 #include "ConfigStore.h"
 #include "DeviceConfig.h"
 #include "ModemService.h"
+#include "SystemRuntime.h"
 
 namespace {
 class Esp32EthernetServer : public EthernetServer {
@@ -71,7 +72,10 @@ uint32_t lastMqttAttempt = 0;
 uint32_t mqttConnectWindowStartedAt = 0;
 uint32_t lastCellularMqttErrorAt = 0;
 uint32_t lastMioneStatusPublish = 0;
+uint32_t lastMioneConfigPublish = 0;
 uint32_t lastSocketStatusPublish = 0;
+uint32_t lastCommunicationHealthAt = 0;
+bool communicationHealthEverSeen = false;
 uint32_t mioneStatusSequence = 0;
 int mqttConnectionCode = -1;
 String mqttConnectionMessage = "Noch nicht gestartet";
@@ -79,6 +83,25 @@ String mqttConnectionTransport;
 bool mqttMobileSubscriptionReady = false;
 uint32_t mqttMobileReceivedAt = 0;
 String mqttMobileSyncMessage = "Noch keine Mobile-Konfiguration empfangen";
+uint32_t appBridgeLastSeenAt = 0;
+String appBridgeSource = "The_App";
+String appBridgeMessage = "Noch kein App-/Bridge-Signal empfangen";
+constexpr size_t kMaxAppPresenceEntries = 16;
+constexpr uint32_t kAppPresenceFreshMs = 75UL * 1000UL;
+struct AppPresenceRecord {
+  String installationId;
+  String uid;
+  String name;
+  String email;
+  String role;
+  String topic;
+  String timestampUtc;
+  String payload;
+  uint32_t lastSeenAt = 0;
+  bool reportedOnline = false;
+};
+AppPresenceRecord appPresenceRecords[kMaxAppPresenceEntries];
+size_t appPresenceCount = 0;
 uint32_t mioneHeartbeatReceivedAt = 0;
 bool mioneHeartbeatValue = false;
 String mioneHeartbeatImei;
@@ -95,6 +118,8 @@ uint32_t lastTimeSync = 0;
 uint32_t lastUpdateCheck = 0;
 uint32_t updateButtonSince = 0;
 int updateButtonIdle = 4095;
+constexpr uint32_t kMioneStatusPublishMs = 60000UL;
+constexpr uint32_t kCommunicationSupervisorTimeoutMs = kMioneStatusPublishMs * 2;
 int currentButtonAdc = 4095;
 uint16_t buttonSamples[10] = {};
 uint32_t buttonSampleSum = 0;
@@ -109,6 +134,9 @@ String modemActivityNumber;
 uint32_t modemActivityUntil = 0;
 String pendingSystemLog;
 uint32_t lastSystemLogWrite = 0;
+bool lastSystemLogHealthy = true;
+String lastSystemLogIssues;
+uint32_t lastSystemLogCleanupKey = 0;
 uint32_t lastUpdateDisplayAt = 0;
 uint32_t lastUpdateStatusServeAt = 0;
 bool updateStatusCanServeWeb = false;
@@ -122,11 +150,30 @@ uint32_t digitalInputPendingAt[4] = {};
 constexpr uint8_t kUpdateMaxAttempts = 3;
 constexpr size_t kLogTailMaxBytes = 16384;
 constexpr uint16_t kLogMaxResponseLines = 150;
+constexpr uint8_t kLogRetentionDays = 30;
+constexpr uint32_t kBootImeiWaitMs = 8000UL;
 constexpr uint32_t kSdSpiFrequency = 10000000;
 constexpr uint32_t kInputDebounceMs = 60;
 constexpr uint32_t kHeartbeatAlarmMs = 15UL * 60UL * 1000UL;
+constexpr uint32_t kHeartbeatFreshMs = 30UL * 1000UL;
+RTC_DATA_ATTR uint8_t imeiRecoveryReboots = 0;
+String rebootRequestReason;
+String rebootRequestDetail;
+bool bootImeiRecoveryPending = false;
+uint32_t bootImeiRecoveryLastAttemptAt = 0;
 
 void queueSystemLog(const String &event, const String &details);
+void maintainSystemLog(bool force);
+void requestReboot(const String &reason, const String &detail, uint32_t delayMs = 250);
+void showBootStatus(const String &step, uint8_t progress, const String &detail);
+bool isPowerCycleReset();
+bool waitForBootImei(uint8_t progress, uint32_t timeoutMs);
+void maintainBootImeiRecovery();
+void maintainCommunicationSupervisor();
+String currentSystemLogPath();
+int32_t civilDateToDays(int year, int month, int day);
+bool parseSystemLogDateKey(const String &path, int32_t &daysSinceEpoch);
+void pruneOldSystemLogs();
 
 struct UpdateState {
   bool available = false;
@@ -164,12 +211,31 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 bool updateNetworkReady();
 String updateTransportName();
 bool downloadedFileReady(const char *path, const String &expectedMd5, size_t expectedSize);
+void cleanupUpdateAttemptFiles();
 String mqttDeviceRoot();
+String mioneTopicRoot();
+String mioneConfigRoot();
+String serviceMqttRoot();
+bool appBridgeIsOnline();
+String appPresenceTopicRoot();
+AppPresenceRecord *findAppPresenceRecord(const String &installationId);
+AppPresenceRecord *ensureAppPresenceRecord(const String &installationId);
+bool isAppPresenceOnline(const AppPresenceRecord &record);
+int activeAppPresenceCount();
 bool mqttConnectedAny();
 bool publishMqttTopic(const String &topic, const String &body, bool retain);
 void publishMioneStatus(bool force = false);
+void publishMioneConfig(bool force = false);
+bool validMioneHeartbeat();
+void publishAlarmMonitoring(const String &alarmCode, const String &alarmText, const String &source,
+                            const String &delivery, bool mqttOnly);
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
                        const String &action, const String &number, AlarmProgress progress);
+
+void noteCommunicationHealth() {
+  communicationHealthEverSeen = true;
+  lastCommunicationHealthAt = millis();
+}
 
 void persistUpdateManualLock(const String &detail) {
   Preferences prefs;
@@ -205,6 +271,22 @@ void restoreUpdateManualLock() {
   updateState.progress = 0;
 }
 
+void resetStaleUpdateStateForVersionChange(const String &previousVersion, const String &newVersion) {
+  if (previousVersion.isEmpty() || previousVersion == newVersion) return;
+  queueSystemLog("UPDATE_MANIFEST_VERSION_CHANGED", "old=" + previousVersion + ",new=" + newVersion);
+  cleanupUpdateAttemptFiles();
+  clearUpdateManualLock();
+  updateState.approved = false;
+  updateState.installing = false;
+  updateState.downloading = false;
+  updateState.downloadQueued = false;
+  updateState.failed = false;
+  updateState.manualCheckRequired = false;
+  updateState.attempts = 0;
+  updateState.detail = "";
+  updateState.progress = 0;
+}
+
 String updateInstallTimeText() {
   char value[8];
   snprintf(value, sizeof(value), "%02u:%02u", config.updateInstallMinute / 60, config.updateInstallMinute % 60);
@@ -233,7 +315,7 @@ String chipId() {
   return value;
 }
 
-String serialNumber() { return "MIONE-" + chipId(); }
+String serialNumber() { return chipId(); }
 
 bool parseIp(const String &value, IPAddress &address) { return address.fromString(value); }
 
@@ -348,6 +430,7 @@ bool checkUpdateManifest(String &error) {
   if (!sdReady) { error = "SD-Karte nicht verfuegbar"; return false; }
   if (!updateNetworkReady()) { error = "Update-Pruefung benoetigt WLAN oder aktivierte Mobilfunkdownloads"; return false; }
   if (!githubUrl(config.updateManifestUrl)) { error = "GitHub-Manifest-URL fehlt"; return false; }
+  String previousVersion = updateState.version;
   updateState.checking = true;
   updateState.failed = false;
   updateState.message = "Pruefe GitHub";
@@ -412,6 +495,7 @@ bool checkUpdateManifest(String &error) {
   size_t firmwareSize = firmware["size"] | manifest["size"] | 0;
   firmwareMd5.toLowerCase();
   if (version.isEmpty() || !githubUrl(firmwareUrl) || !validMd5(firmwareMd5) || firmwareSize == 0) { error = "Firmware-Angaben im Manifest fehlen"; return false; }
+  resetStaleUpdateStateForVersionChange(previousVersion, version);
   bool firmwareAvailable = newerVersion(version, BuildInfo::version);
   JsonObjectConst recovery = manifest["recovery"];
   String recoveryUrl = recovery["url"] | "";
@@ -490,6 +574,7 @@ bool calculateFileMd5(File &file, String &value, size_t &checkedBytes) {
     if (count <= 0) return false;
     md5.add(buffer, static_cast<uint16_t>(count));
     checkedBytes += static_cast<size_t>(count);
+    SystemRuntime::kickWatchdog();
     delay(0);
   }
   md5.calculate();
@@ -582,6 +667,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   WiFiClientSecure tls;
   tls.setInsecure();
   HTTPClient request;
+  request.setTimeout(25000);
   request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!request.begin(tls, url)) {
     error = "Download konnte nicht gestartet werden";
@@ -619,6 +705,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
   showUpdateStatus(label, total > 0 ? "0 / " + String(total / 1024) + " KB" : "Verbindung steht", progressFrom);
   while ((request.connected() || stream->available()) &&
          (total < 0 || written < static_cast<size_t>(total))) {
+    SystemRuntime::kickWatchdog();
     size_t available = stream->available();
     if (available) {
       size_t count = min(available, sizeof(buffer));
@@ -638,6 +725,7 @@ bool downloadToSd(const String &url, const char *path, const String &expectedMd5
       error = "Download-Zeitueberschreitung";
       break;
     } else {
+      SystemRuntime::kickWatchdog();
       delay(10);
     }
     uint8_t percent = total > 0 ? min<uint32_t>(100, written * 100UL / total) : 0;
@@ -754,6 +842,7 @@ bool stageWebPackage(String &error) {
   size_t archiveSize = archive.size();
   showUpdateStatus("Webdateien", "Paket wird entpackt", 72);
   while (archive.available()) {
+    SystemRuntime::kickWatchdog();
     if (archive.read(header, sizeof(header)) != sizeof(header)) { error = "WWW-TAR-Header ist unvollstaendig"; break; }
     bool empty = true;
     for (uint8_t value : header) if (value) { empty = false; break; }
@@ -777,6 +866,7 @@ bool stageWebPackage(String &error) {
         size_t count = archive.read(data, min<size_t>(sizeof(data), remaining));
         if (!count || target.write(data, count) != count) { error = "WWW-Datei konnte nicht entpackt werden"; break; }
         remaining -= count;
+        SystemRuntime::kickWatchdog();
       }
       target.close();
       if (!error.isEmpty()) break;
@@ -958,6 +1048,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = image.read(buffer, min(sizeof(buffer), imageSize - offset));
     if (!count || esp_partition_write(factory, offset, buffer, count) != ESP_OK) { image.close(); error = "Recovery konnte nicht geschrieben werden"; return false; }
     offset += count;
+    SystemRuntime::kickWatchdog();
     showUpdateStatus("Recovery schreiben", String(offset / 1024) + " / " + String(imageSize / 1024) + " KB",
                      20 + min<size_t>(5, offset * 5 / imageSize));
   }
@@ -968,6 +1059,7 @@ bool installRecovery(const String &expectedMd5, String &error) {
     size_t count = min(sizeof(buffer), imageSize - offset);
     if (esp_partition_read(factory, offset, buffer, count) != ESP_OK) { error = "Recovery konnte nicht rueckgelesen werden"; return false; }
     verify.add(buffer, count);
+    SystemRuntime::kickWatchdog();
     showUpdateStatus("Recovery pruefen", String((offset + count) / 1024) + " / " + String(imageSize / 1024) + " KB",
                      25 + min<size_t>(4, (offset + count) * 4 / imageSize));
   }
@@ -1128,7 +1220,7 @@ bool prepareApprovedUpdate(String &error) {
   queueSystemLog("UPDATE", "version=" + updateState.version + ",webVersion=" + updateState.webVersion + ",bereit=1");
   updateState.message = "Neustart in Recovery";
   showUpdateStatus("Vorbereitung fertig", "Neustart in Recovery", 95);
-  restartAt = millis() + 1000;
+  requestReboot("update", "Neustart in Recovery", 1000);
   return true;
 }
 
@@ -1279,6 +1371,80 @@ String logTimestamp() {
   return text;
 }
 
+String utcTimestamp() {
+  if (!rtcReady) return "";
+  DateTime now = rtc.now();
+  char text[32];
+  snprintf(text, sizeof(text), "%04u-%02u-%02uT%02u:%02u:%02uZ",
+           now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+  return text;
+}
+
+String currentSystemLogPath() {
+  if (!rtcReady) return "/logs/system-boot.csv";
+  DateTime now = rtc.now();
+  char text[40];
+  snprintf(text, sizeof(text), "/logs/system-%04u-%02u-%02u.csv",
+           now.year(), now.month(), now.day());
+  return String(text);
+}
+
+int32_t civilDateToDays(int year, int month, int day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int32_t>(doe) - 719468;
+}
+
+bool parseSystemLogDateKey(const String &path, int32_t &daysSinceEpoch) {
+  String name = path;
+  int slash = name.lastIndexOf('/');
+  if (slash >= 0) name = name.substring(slash + 1);
+  if (name == "system.csv" || name == "system-boot.csv") return false;
+  if (!name.startsWith("system-") || !name.endsWith(".csv")) return false;
+  String datePart = name.substring(7, name.length() - 4);
+  if (datePart.length() != 10 || datePart.charAt(4) != '-' || datePart.charAt(7) != '-') return false;
+  int year = datePart.substring(0, 4).toInt();
+  int month = datePart.substring(5, 7).toInt();
+  int day = datePart.substring(8, 10).toInt();
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  daysSinceEpoch = civilDateToDays(year, month, day);
+  return true;
+}
+
+void pruneOldSystemLogs() {
+  if (!sdReady || !rtcReady) return;
+  DateTime now = rtc.now();
+  uint32_t todayKey = static_cast<uint32_t>(now.year()) * 10000UL +
+                      static_cast<uint32_t>(now.month()) * 100UL +
+                      static_cast<uint32_t>(now.day());
+  if (lastSystemLogCleanupKey == todayKey) return;
+  lastSystemLogCleanupKey = todayKey;
+
+  int32_t todayDays = civilDateToDays(now.year(), now.month(), now.day());
+  File root = SD.open("/logs");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return;
+  }
+
+  for (File entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+    String path = entry.name();
+    bool isDirectory = entry.isDirectory();
+    entry.close();
+    if (isDirectory) continue;
+    if (!path.startsWith("/")) path = "/logs/" + path;
+    int32_t logDays = 0;
+    if (!parseSystemLogDateKey(path, logDays)) continue;
+    if (todayDays - logDays >= kLogRetentionDays) {
+      SD.remove(path);
+    }
+  }
+  root.close();
+}
+
 String cleanLogValue(String value) {
   value.replace(';', ',');
   value.replace('\r', ' ');
@@ -1297,6 +1463,105 @@ void queueSystemLog(const String &event, const String &details) {
     pendingSystemLog.remove(0, newline + 1);
   }
   pendingSystemLog += line;
+}
+
+void requestReboot(const String &reason, const String &detail, uint32_t delayMs) {
+  rebootRequestReason = reason.isEmpty() ? "manual" : reason;
+  rebootRequestDetail = detail;
+  SystemRuntime::requestReboot(rebootRequestReason, rebootRequestDetail);
+  queueSystemLog("REBOOT_REQUEST",
+                 "source=" + rebootRequestReason +
+                 ",detail=" + rebootRequestDetail +
+                 ",delayMs=" + String(delayMs));
+  maintainSystemLog(true);
+  restartAt = millis() + delayMs;
+}
+
+bool isPowerCycleReset() {
+  esp_reset_reason_t reason = esp_reset_reason();
+  return reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT;
+}
+
+bool waitForBootImei(uint8_t progress, uint32_t timeoutMs) {
+  if (!config.cellularEnabled) {
+    imeiRecoveryReboots = 0;
+    bootImeiRecoveryPending = false;
+    return true;
+  }
+  if (!modem.imei().isEmpty()) {
+    imeiRecoveryReboots = 0;
+    bootImeiRecoveryPending = false;
+    return true;
+  }
+
+  const bool powerCycle = isPowerCycleReset();
+  uint32_t startedAt = millis();
+  while (millis() - startedAt < timeoutMs) {
+    showBootStatus("Mobilfunkmodem", progress,
+                   powerCycle ? "warte auf IMEI nach Modem-Reset" : "warte auf IMEI");
+    SystemRuntime::kickWatchdog();
+    if (!modem.imei().isEmpty()) {
+      imeiRecoveryReboots = 0;
+      bootImeiRecoveryPending = false;
+      return true;
+    }
+    modem.loop();
+    delay(100);
+  }
+
+  queueSystemLog("BOOT_IMEI_PENDING",
+                 "progress=" + String(progress) + ",reason=" + (powerCycle ? "power-cycle" : "imei-missing"));
+  maintainSystemLog(true);
+  imeiRecoveryReboots = 0;
+  bootImeiRecoveryPending = true;
+  bootImeiRecoveryLastAttemptAt = millis();
+  return true;
+}
+
+void maintainBootImeiRecovery() {
+  if (!bootImeiRecoveryPending || !config.cellularEnabled) return;
+  if (!modem.imei().isEmpty()) {
+    bootImeiRecoveryPending = false;
+    queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
+    maintainSystemLog(true);
+    imeiRecoveryReboots = 0;
+    return;
+  }
+  if (millis() - bootImeiRecoveryLastAttemptAt < 30000) return;
+  bootImeiRecoveryLastAttemptAt = millis();
+  ++imeiRecoveryReboots;
+  queueSystemLog("BOOT_IMEI_BACKGROUND_RETRY",
+                 "attempt=" + String(imeiRecoveryReboots) + ",detail=IMEI weiterhin nicht verfuegbar");
+  maintainSystemLog(true);
+  if (imeiRecoveryReboots >= 3) {
+    queueSystemLog("BOOT_IMEI_SUPERVISOR",
+                   "reason=IMEI weiterhin nicht verfuegbar nach " + String(imeiRecoveryReboots) + " Versuchen");
+    maintainSystemLog(true);
+    requestReboot("boot-imei", "IMEI weiterhin nicht verfuegbar", 500);
+    return;
+  }
+  modem.resetHardware();
+  modem.begin(config);
+  modem.loop();
+  if (!modem.imei().isEmpty()) {
+    bootImeiRecoveryPending = false;
+    imeiRecoveryReboots = 0;
+    queueSystemLog("BOOT_IMEI_RECOVERED", "imei=" + modem.imei() + ",model=" + modem.model());
+    maintainSystemLog(true);
+  }
+}
+
+void maintainCommunicationSupervisor() {
+  if (restartAt != 0 || accessPoint) return;
+  if (!communicationHealthEverSeen || lastCommunicationHealthAt == 0) return;
+  if (millis() - lastCommunicationHealthAt < kCommunicationSupervisorTimeoutMs) return;
+  queueSystemLog("SUPERVISOR_REBOOT",
+                 "reason=communication-timeout,lastHealthMs=" + String(lastCommunicationHealthAt) +
+                 ",modem=" + String(modem.connected() ? 1 : 0) +
+                 ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
+                 ",mqtt=" + String(mqttConnectedAny() ? 1 : 0));
+  maintainSystemLog(true);
+  requestReboot("supervisor", "Keine Kommunikationsaktivitaet fuer 120s", 500);
 }
 
 String activeNetworkName() {
@@ -1338,7 +1603,12 @@ void publishDigitalInputsStatus(bool retain = true) {
   serializeJson(doc, body);
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/inputs/status", body, retain);
-  if (!config.mqttUser.isEmpty()) publishMqttTopic(config.mqttUser + "/Alarmfunktionen/InputStatus", body, retain);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/InputStatus", body, retain);
+  }
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/inputs/status", body, retain);
 }
 
 void sendInputAlarm(uint8_t index) {
@@ -1348,8 +1618,14 @@ void sendInputAlarm(uint8_t index) {
   String text = settings.text;
   text.trim();
   if (text.isEmpty()) text = "Alarm Digitaleingang " + String(index + 1);
-  queueSystemLog("INPUT_ALARM", "input=" + String(index + 1) + ",state=" +
-                                (digitalInputClosed[index] ? "closed" : "open"));
+  bool mqttOnly = !modem.alarmDeliveryAvailable();
+  queueSystemLog(mqttOnly ? "INPUT_ALARM_MQTT_ONLY" : "INPUT_ALARM",
+                 "input=" + String(index + 1) + ",state=" +
+                 (digitalInputClosed[index] ? "closed" : "open") +
+                 ",mode=" + String(mqttOnly ? "mqtt-only" : "mobile"));
+  publishAlarmMonitoring(alarmCode, text, "Digitaleingang " + String(index + 1),
+                         mqttOnly ? "MQTT only" : "SMS/Anruf", mqttOnly);
+  if (mqttOnly) return;
   for (uint8_t slot = 0; slot < 5; ++slot) {
     const InputAlarmRecipient &recipient = settings.recipients[slot];
     String number = recipient.number;
@@ -1438,50 +1714,171 @@ bool updateNetworkReady() {
   return modem.packetDataConnected();
 }
 
-void maintainSystemLog(bool force = false) {
-  if (!sdReady) return;
-  uint32_t interval = static_cast<uint32_t>(config.logIntervalSeconds) * 1000UL;
-  if (!force && millis() - lastSystemLogWrite < interval) return;
-  lastSystemLogWrite = millis();
+String systemStatusIssues() {
+  String issues;
+  auto addIssue = [&](const char *issue) {
+    if (!issues.isEmpty()) issues += ",";
+    issues += issue;
+  };
+
+  if (!accessPoint && activeNetworkName() == "offline") addIssue("network");
+  if ((config.mqttEnabled || config.mqttServiceEnabled) && !mqttConnectedAny()) addIssue("mqtt");
+  if (config.cellularEnabled && modem.imei().isEmpty()) addIssue("imei");
+  if (!sdReady) addIssue("sd");
+  if (!rtcReady) addIssue("rtc");
+  return issues;
+}
+
+String systemStatusDetails() {
   String ip = accessPoint ? WiFi.softAPIP().toString() :
               (ethernetReady && Ethernet.linkStatus() == LinkON ? Ethernet.localIP().toString() :
                (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "0.0.0.0"));
-  String status = "network=" + activeNetworkName() + ",ip=" + ip +
-                  ",wifiRssi=" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
-                  ",cellCsq=" + String(modem.signalQuality()) +
-                  ",cellDbm=" + String(modem.signalQuality() >= 0 && modem.signalQuality() <= 31
-                                            ? -113 + 2 * modem.signalQuality() : 0) +
-                  ",operator=" + modem.networkOperator() +
-                  ",registered=" + String(modem.connected() ? 1 : 0) +
-                  ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
-                  ",mqtt=" + String(mqttConnectedAny() ? 1 : 0) +
-                  ",sd=1,rtc=" + String(rtcReady ? 1 : 0) +
-                  ",buttonAvg=" + String(currentButtonAdc) +
-                  ",heap=" + String(ESP.getFreeHeap());
-  queueSystemLog("STATUS", status);
+  return "network=" + activeNetworkName() + ",ip=" + ip +
+         ",wifiRssi=" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
+         ",cellCsq=" + String(modem.signalQuality()) +
+         ",cellDbm=" + String(modem.signalQuality() >= 0 && modem.signalQuality() <= 31
+                                   ? -113 + 2 * modem.signalQuality() : 0) +
+         ",operator=" + modem.networkOperator() +
+         ",registered=" + String(modem.connected() ? 1 : 0) +
+         ",packetData=" + String(modem.packetDataConnected() ? 1 : 0) +
+         ",mqtt=" + String(mqttConnectedAny() ? 1 : 0) +
+         ",sd=" + String(sdReady ? 1 : 0) +
+         ",rtc=" + String(rtcReady ? 1 : 0) +
+         ",buttonAvg=" + String(currentButtonAdc) +
+         ",heap=" + String(ESP.getFreeHeap());
+}
 
-  File logFile = SD.open("/logs/system.csv", FILE_APPEND);
+void maintainSystemLog(bool force = false) {
+  if (!sdReady) return;
+  String issues = systemStatusIssues();
+  bool healthy = issues.isEmpty();
+  bool shouldLog = false;
+  if (!force) {
+    if (healthy) {
+      shouldLog = !lastSystemLogHealthy;
+    } else {
+      uint16_t repeatSeconds = config.logIntervalSeconds < 10 ? 10 : config.logIntervalSeconds;
+      uint32_t interval = static_cast<uint32_t>(repeatSeconds) * 1000UL;
+      shouldLog = !lastSystemLogHealthy || issues != lastSystemLogIssues || millis() - lastSystemLogWrite >= interval;
+    }
+  }
+  if (shouldLog) {
+    queueSystemLog(healthy ? "STATUS_OK" : "STATUS_ERROR",
+                   healthy ? systemStatusDetails() : systemStatusDetails() + ",issues=" + issues);
+    lastSystemLogHealthy = healthy;
+    lastSystemLogIssues = issues;
+  }
+
+  if (pendingSystemLog.isEmpty()) return;
+  pruneOldSystemLogs();
+  SD.mkdir("/logs");
+  String logPath = currentSystemLogPath();
+  File logFile = SD.open(logPath, FILE_APPEND);
   if (!logFile) return;
   if (logFile.size() == 0) logFile.print("timestamp;event;details\n");
   String batch = pendingSystemLog;
   size_t written = logFile.print(batch);
   logFile.flush();
   logFile.close();
-  if (written == batch.length()) pendingSystemLog = "";
+  if (written == batch.length()) {
+    pendingSystemLog = "";
+    lastSystemLogWrite = millis();
+  }
 }
 
-const char *resetReasonName(esp_reset_reason_t reason) {
-  switch (reason) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_SW: return "software";
-    case ESP_RST_PANIC: return "panic";
-    case ESP_RST_INT_WDT: return "interrupt-watchdog";
-    case ESP_RST_TASK_WDT: return "task-watchdog";
-    case ESP_RST_WDT: return "watchdog";
-    case ESP_RST_DEEPSLEEP: return "deep-sleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    default: return "unknown";
+String readSystemLogTail(const String &path, uint16_t limit, String &error) {
+  if (!sdReady) {
+    error = "SD-Karte nicht verfuegbar";
+    return "";
   }
+  if (limit < 1) limit = 1;
+  if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
+
+  digitalWrite(BoardPins::ethernetCs, HIGH);
+  File logFile = SD.open(path, FILE_READ);
+  if (!logFile) {
+    error = "Systemprotokoll konnte nicht geoeffnet werden";
+    return "";
+  }
+
+  size_t fileSize = logFile.size();
+  if (fileSize == 0) {
+    logFile.close();
+    return "";
+  }
+
+  size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
+  if (startOffset > 0) {
+    logFile.seek(startOffset);
+    while (logFile.position() < fileSize) {
+      if (logFile.read() == '\n') break;
+      SystemRuntime::kickWatchdog();
+      delay(0);
+    }
+  }
+
+  String lines[kLogMaxResponseLines];
+  uint16_t count = 0;
+  uint16_t head = 0;
+  String line;
+  line.reserve(256);
+  uint8_t buffer[512];
+
+  while (logFile.position() < fileSize) {
+    size_t remaining = fileSize - logFile.position();
+    size_t wanted = min(sizeof(buffer), remaining);
+    int read = logFile.read(buffer, wanted);
+    if (read <= 0) break;
+    SystemRuntime::kickWatchdog();
+    for (int i = 0; i < read; ++i) {
+      char c = static_cast<char>(buffer[i]);
+      if (c == '\r') continue;
+      if (c == '\n') {
+        line.trim();
+        if (!line.isEmpty() && line != "timestamp;event;details") {
+          if (count < limit) {
+            lines[count++] = line;
+          } else {
+            lines[head] = line;
+            head = (head + 1) % limit;
+          }
+        }
+        line = "";
+      } else {
+        if (line.length() < 512) line += c;
+      }
+    }
+    delay(0);
+  }
+
+  line.trim();
+  if (!line.isEmpty() && line != "timestamp;event;details") {
+    if (count < limit) {
+      lines[count++] = line;
+    } else {
+      lines[head] = line;
+      head = (head + 1) % limit;
+    }
+  }
+
+  logFile.close();
+
+  String body;
+  body.reserve(min<size_t>(kLogTailMaxBytes, 16384));
+  if (count == 0) return body;
+  if (count < limit) {
+    for (uint16_t i = 0; i < count; ++i) {
+      body += lines[i];
+      body += '\n';
+    }
+    return body;
+  }
+  for (uint16_t i = 0; i < limit; ++i) {
+    uint16_t index = (head + i) % limit;
+    body += lines[index];
+    body += '\n';
+  }
+  return body;
 }
 
 void beginSharedSpi() {
@@ -1493,7 +1890,8 @@ void beginSharedSpi() {
 }
 
 void beginSd() {
-  if (!config.sdEnabled && config.provisioned) return;
+  // Logs, Webdateien und Firmware-Updates brauchen die SD auch dann, wenn
+  // der SD-Schalter in der Konfiguration deaktiviert ist.
   sdReady = SD.begin(BoardPins::sdCs, SPI, kSdSpiFrequency);
   if (sdReady) {
     SD.mkdir("/www");
@@ -1541,7 +1939,7 @@ void setupWeb() {
   web.on("/", HTTP_GET, [] { if (authorized()) servePortal(); });
   web.on("/api/status", HTTP_GET, [] {
     if (!authorized()) return;
-    DynamicJsonDocument doc(2560);
+    DynamicJsonDocument doc(4096);
     doc["version"] = BuildInfo::version;
     doc["deviceId"] = config.deviceId;
     doc["serialNumber"] = serialNumber();
@@ -1553,6 +1951,8 @@ void setupWeb() {
     doc["sd"] = sdReady;
     doc["rtc"] = rtcReady;
     doc["cellular"] = modem.connected();
+    doc["simReady"] = modem.simReady();
+    doc["alarmDeliveryAvailable"] = modem.alarmDeliveryAvailable();
     doc["signal"] = modem.signalQuality();
     doc["mqtt"] = mqttConnectedAny();
     JsonObject mqttConnection = doc.createNestedObject("mqttConnection");
@@ -1561,10 +1961,52 @@ void setupWeb() {
     mqttConnection["message"] = mqttConnectionMessage;
     mqttConnection["transport"] = mqttConnectionTransport;
     mqttConnection["lastAttemptMs"] = lastMqttAttempt;
+    JsonObject appBridge = doc.createNestedObject("appBridge");
+    appBridge["online"] = appBridgeIsOnline();
+    appBridge["source"] = appBridgeSource;
+    appBridge["message"] = appBridgeMessage;
+    appBridge["ageSeconds"] = appBridgeLastSeenAt ? static_cast<int32_t>((millis() - appBridgeLastSeenAt) / 1000UL) : -1;
+    JsonObject theApp = doc.createNestedObject("theApp");
+    String appRoot = appPresenceTopicRoot();
+    theApp["topicRoot"] = appRoot;
+    theApp["onlineCount"] = activeAppPresenceCount();
+    theApp["totalCount"] = static_cast<int32_t>(appPresenceCount);
+    JsonArray appClients = theApp.createNestedArray("clients");
+    for (size_t i = 0; i < appPresenceCount; ++i) {
+      const AppPresenceRecord &record = appPresenceRecords[i];
+      JsonObject client = appClients.createNestedObject();
+      client["installationId"] = record.installationId;
+      client["uid"] = record.uid;
+      client["name"] = record.name.isEmpty() ? (record.email.isEmpty() ? record.uid : record.email) : record.name;
+      client["displayName"] = record.name;
+      client["email"] = record.email;
+      client["role"] = record.role;
+      client["online"] = isAppPresenceOnline(record);
+      client["reportedOnline"] = record.reportedOnline;
+      client["ageSeconds"] = record.lastSeenAt ? static_cast<int32_t>((millis() - record.lastSeenAt) / 1000UL) : -1;
+      client["timestampUtc"] = record.timestampUtc;
+      client["topic"] = record.topic;
+    }
+    JsonObject mioneSystem = doc.createNestedObject("mioneSystem");
+    mioneSystem["enabled"] = config.mqttEnabled;
+    mioneSystem["systemId"] = config.mqttBaseTopic;
+    mioneSystem["modemTopic"] = mqttDeviceRoot();
+    mioneSystem["statusTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/ModemStatus" : "";
+    mioneSystem["heartbeatTopic"] = config.mqttEnabled && !mioneTopicRoot().isEmpty() ? mioneTopicRoot() + "/Heartbeat" : "";
+    uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
+    bool heartbeatSeen = mioneHeartbeatReceivedAt != 0;
+    bool heartbeatValid = config.mqttEnabled && validMioneHeartbeat();
+    mioneSystem["heartbeatOnline"] = config.mqttEnabled && validMioneHeartbeat();
+    mioneSystem["heartbeatReceived"] = heartbeatSeen;
+    mioneSystem["heartbeatAgeSeconds"] = heartbeatSeen ? static_cast<int32_t>(heartbeatAge / 1000UL) : -1;
+    mioneSystem["heartbeatState"] = !config.mqttEnabled ? "deaktiviert" :
+                                    heartbeatValid ? "aktiv" :
+                                    heartbeatSeen ? "ausstehend" : "wartet";
+    mioneSystem["subscriptionReady"] = mqttMobileSubscriptionReady;
     JsonObject logging = doc.createNestedObject("logging");
     logging["intervalSeconds"] = config.logIntervalSeconds;
     logging["pendingBytes"] = pendingSystemLog.length();
-    logging["path"] = "/logs/system.csv";
+    logging["path"] = currentSystemLogPath();
     doc["dateTime"] = clockText();
     doc["internet"] = WiFi.status() == WL_CONNECTED ? "wifi" :
                       (ethernetReady && Ethernet.linkStatus() == LinkON) ? "ethernet" :
@@ -1577,29 +2019,48 @@ void setupWeb() {
     if (!authorized()) return;
     DynamicJsonDocument doc(2560);
     alarmRouter.toJson(doc.to<JsonObject>());
+    doc["systemEnabled"] = config.mqttEnabled;
     doc["subscriptionReady"] = mqttMobileSubscriptionReady;
     doc["lastReceivedMs"] = mqttMobileReceivedAt;
     doc["syncMessage"] = mqttMobileSyncMessage;
-    doc["sourceTopic"] = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
+    String topicRoot = mioneTopicRoot();
+    doc["sourceTopic"] = topicRoot.isEmpty() ? "" : topicRoot + "/Config/Mobile";
     JsonObject heartbeat = doc.createNestedObject("heartbeat");
     uint32_t heartbeatAge = mioneHeartbeatReceivedAt ? millis() - mioneHeartbeatReceivedAt : UINT32_MAX;
     bool heartbeatImeiMatches = !modem.imei().isEmpty() && mioneHeartbeatImei == modem.imei();
     heartbeat["received"] = mioneHeartbeatReceivedAt != 0;
-    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= 60000 && heartbeatImeiMatches;
+    heartbeat["online"] = mioneHeartbeatReceivedAt != 0 && heartbeatAge <= kHeartbeatFreshMs && heartbeatImeiMatches;
     heartbeat["ageSeconds"] = mioneHeartbeatReceivedAt ? heartbeatAge / 1000 : -1;
     heartbeat["value"] = mioneHeartbeatValue;
     heartbeat["timestampUtc"] = mioneHeartbeatTimestamp;
     heartbeat["imei"] = mioneHeartbeatImei;
     heartbeat["imeiMatches"] = heartbeatImeiMatches;
     heartbeat["message"] = mioneHeartbeatMessage;
-    heartbeat["topic"] = config.mqttUser + "/Alarmfunktionen/Heartbeat";
+    heartbeat["topic"] = topicRoot.isEmpty() ? "" : topicRoot + "/Heartbeat";
     JsonObject imeiCheck = doc.createNestedObject("imeiCheck");
     imeiCheck["received"] = mioneImeiReceivedAt != 0;
     imeiCheck["local"] = modem.imei();
     imeiCheck["configured"] = mioneConfiguredImei;
     imeiCheck["matches"] = !modem.imei().isEmpty() && mioneConfiguredImei == modem.imei();
-    imeiCheck["topic"] = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
+    imeiCheck["topic"] = topicRoot.isEmpty() ? "" : topicRoot + "/Config/Mobile/modemImei";
     jsonResponse(200, doc);
+  });
+  web.on("/api/push/test", HTTP_POST, [] {
+    if (!authorized()) return;
+    if (!mqttConnectedAny()) return errorResponse(503, "MQTT nicht verbunden");
+    if (config.mqttBaseTopic.isEmpty()) return errorResponse(400, "System-ID fehlt");
+    DynamicJsonDocument doc(384);
+    doc["type"] = "pushTest";
+    doc["systemId"] = config.mqttBaseTopic;
+    doc["message"] = "Push Service Test vom ESP32";
+    doc["source"] = "ESP32-GSM-AE08-R-L";
+    doc["timestampUtc"] = utcTimestamp();
+    String body;
+    serializeJson(doc, body);
+    if (!publishMqttTopic(config.mqttBaseTopic + "/push/test", body, false)) {
+      return errorResponse(502, "Push Service Test konnte nicht gesendet werden");
+    }
+    web.send(200, "application/json", "{\"ok\":true}");
   });
   web.on("/api/config", HTTP_GET, [] {
     if (!authorized()) return;
@@ -1617,9 +2078,15 @@ void setupWeb() {
     if (!candidate.fromJson(doc.as<JsonObjectConst>(), error)) return errorResponse(422, error);
     candidate.provisioned = true;
     if (!configStore.save(candidate, error)) return errorResponse(500, error);
+    queueSystemLog("CONFIG_CHANGE", "Konfiguration gespeichert, Neustart geplant");
+    requestReboot("config", "Konfiguration gespeichert", 750);
     web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
-    queueSystemLog("CONFIG", "Konfiguration gespeichert, Neustart geplant");
-    restartAt = millis() + 250;
+  });
+  web.on("/api/system/reboot", HTTP_POST, [] {
+    if (!authorized()) return;
+    queueSystemLog("REBOOT_REQUEST", "reason=manual,detail=Reboot-Button");
+    requestReboot("manual", "Reboot-Button", 500);
+    web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
   });
   web.on("/api/modem/factory-reset", HTTP_POST, [] {
     if (!authorized()) return;
@@ -1630,11 +2097,13 @@ void setupWeb() {
   });
   web.on("/api/system/nvs-reset", HTTP_POST, [] {
     if (!authorized()) return;
+    queueSystemLog("REBOOT_REQUEST", "reason=nvs-reset,detail=NVS geloescht");
+    maintainSystemLog(true);
     web.send(200, "application/json", "{\"ok\":true,\"restart\":true}");
     delay(100);
     nvs_flash_erase();
     nvs_flash_init();
-    ESP.restart();
+    requestReboot("nvs-reset", "NVS geloescht", 250);
   });
   web.on("/api/files", HTTP_GET, [] {
     if (!authorized()) return;
@@ -1683,62 +2152,25 @@ void setupWeb() {
   web.on("/api/logs", HTTP_GET, [] {
     if (!authorized()) return;
     if (!sdReady) return errorResponse(503, "SD-Karte nicht verfuegbar");
-    maintainSystemLog(true);
-    if (!SD.exists("/logs/system.csv")) return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     int limit = web.arg("limit").toInt();
     if (limit < 1) limit = 100;
     if (limit > kLogMaxResponseLines) limit = kLogMaxResponseLines;
-    digitalWrite(BoardPins::ethernetCs, HIGH);
-    File logFile = SD.open("/logs/system.csv", FILE_READ);
-    if (!logFile) return errorResponse(500, "Systemprotokoll konnte nicht geoeffnet werden");
-
-    size_t fileSize = logFile.size();
-    size_t startOffset = fileSize > kLogTailMaxBytes ? fileSize - kLogTailMaxBytes : 0;
-    if (startOffset > 0) {
-      logFile.seek(startOffset);
-      while (logFile.position() < fileSize) {
-        ++startOffset;
-        if (logFile.read() == '\n') break;
-        delay(0);
+    String path = safePath(web.arg("file"));
+    if (path.isEmpty()) path = currentSystemLogPath();
+    if (!path.startsWith("/logs/")) path = currentSystemLogPath();
+    if (!SD.exists(path)) {
+      if (path == currentSystemLogPath()) {
+        web.sendHeader("Cache-Control", "no-store, max-age=0");
+        web.send(200, "text/plain; charset=utf-8", "");
+        return;
       }
+      return errorResponse(404, "Noch kein Systemprotokoll vorhanden");
     }
-
-    size_t scanStart = startOffset;
-    uint16_t linesInWindow = 0;
-    logFile.seek(scanStart);
-    while (logFile.position() < fileSize) {
-      if (logFile.read() == '\n') ++linesInWindow;
-      delay(0);
-    }
-    if (fileSize > 0) {
-      logFile.seek(fileSize - 1);
-      if (logFile.read() != '\n') ++linesInWindow;
-    }
-
-    uint16_t skipLines = linesInWindow > static_cast<uint16_t>(limit) ? linesInWindow - limit : 0;
-    logFile.seek(scanStart);
-    while (skipLines > 0 && logFile.position() < fileSize) {
-      if (logFile.read() == '\n') --skipLines;
-      delay(0);
-    }
-
-    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    web.send(200, "text/plain; charset=utf-8", "");
-    char chunk[385];
-    while (logFile.position() < fileSize) {
-      size_t remaining = fileSize - logFile.position();
-      size_t wanted = min(sizeof(chunk) - 1, remaining);
-      int read = logFile.read(reinterpret_cast<uint8_t *>(chunk), wanted);
-      if (read <= 0) break;
-      for (int i = 0; i < read; ++i) {
-        if (chunk[i] == '\0') chunk[i] = ' ';
-      }
-      chunk[read] = '\0';
-      web.sendContent(chunk);
-      delay(0);
-    }
-    logFile.close();
-    web.sendContent("");
+    String error;
+    String body = readSystemLogTail(path, static_cast<uint16_t>(limit), error);
+    if (!error.isEmpty()) return errorResponse(500, error);
+    web.sendHeader("Cache-Control", "no-store, max-age=0");
+    web.send(200, "text/plain; charset=utf-8", body);
   });
   web.on("/api/file", HTTP_GET, [] {
     if (!authorized()) return;
@@ -1843,8 +2275,110 @@ void setupWeb() {
 }
 
 String mqttDeviceRoot() {
-  if (modem.imei().isEmpty()) return "";
+  if (modem.imei().isEmpty() || config.mqttBaseTopic.isEmpty()) return "";
   return config.mqttBaseTopic + "/modems/" + modem.imei();
+}
+
+String mioneTopicRoot() {
+  if (config.mqttBaseTopic.isEmpty()) return "";
+  return config.mqttBaseTopic + "/Alarmfunktionen";
+}
+
+String mioneConfigRoot() {
+  String root = mioneTopicRoot();
+  if (root.isEmpty()) return "";
+  return root + "/config";
+}
+
+String serviceMqttRoot() {
+  if (!config.mqttServiceEnabled) return "";
+  String root = config.mqttTopTopic;
+  root.trim();
+  return root;
+}
+
+bool appBridgeIsOnline() {
+  return appBridgeLastSeenAt != 0 && millis() - appBridgeLastSeenAt <= 120000UL;
+}
+
+void touchAppBridgeStatus(const String &source, const String &message, bool online = true) {
+  if (!source.isEmpty()) appBridgeSource = source;
+  appBridgeMessage = message;
+  appBridgeLastSeenAt = millis();
+  if (!online) appBridgeLastSeenAt = millis() - 120001UL;
+}
+
+String appPresenceTopicRoot() {
+  if (config.mqttBaseTopic.isEmpty()) return "";
+  return config.mqttBaseTopic + "/the_app";
+}
+
+AppPresenceRecord *findAppPresenceRecord(const String &installationId) {
+  if (installationId.isEmpty()) return nullptr;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (appPresenceRecords[i].installationId == installationId) {
+      return &appPresenceRecords[i];
+    }
+  }
+  return nullptr;
+}
+
+AppPresenceRecord *ensureAppPresenceRecord(const String &installationId) {
+  if (installationId.isEmpty()) return nullptr;
+  if (AppPresenceRecord *existing = findAppPresenceRecord(installationId)) {
+    return existing;
+  }
+  if (appPresenceCount < kMaxAppPresenceEntries) {
+    AppPresenceRecord &record = appPresenceRecords[appPresenceCount++];
+    record = AppPresenceRecord();
+    record.installationId = installationId;
+    return &record;
+  }
+  size_t oldestIndex = 0;
+  uint32_t oldestSeen = UINT32_MAX;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (appPresenceRecords[i].lastSeenAt < oldestSeen) {
+      oldestSeen = appPresenceRecords[i].lastSeenAt;
+      oldestIndex = i;
+    }
+  }
+  AppPresenceRecord &record = appPresenceRecords[oldestIndex];
+  record = AppPresenceRecord();
+  record.installationId = installationId;
+  return &record;
+}
+
+bool isAppPresenceOnline(const AppPresenceRecord &record) {
+  if (record.lastSeenAt == 0) return false;
+  if (!record.reportedOnline) return false;
+  return millis() - record.lastSeenAt <= kAppPresenceFreshMs;
+}
+
+int activeAppPresenceCount() {
+  int count = 0;
+  for (size_t i = 0; i < appPresenceCount; ++i) {
+    if (isAppPresenceOnline(appPresenceRecords[i])) ++count;
+  }
+  return count;
+}
+
+void recordAppPresence(const String &installationId, JsonObjectConst input, const String &topic, const String &payload) {
+  AppPresenceRecord *record = ensureAppPresenceRecord(installationId);
+  if (record == nullptr) return;
+  record->topic = topic;
+  record->payload = payload;
+  String uid = input["uid"] | "";
+  if (!uid.isEmpty()) record->uid = uid;
+  String name = input["displayName"] | input["name"] | "";
+  if (!name.isEmpty()) record->name = name;
+  String email = input["email"] | "";
+  if (!email.isEmpty()) record->email = email;
+  String role = input["role"] | "";
+  if (!role.isEmpty()) record->role = role;
+  String timestampUtc = input["timestampUtc"] | "";
+  if (!timestampUtc.isEmpty()) record->timestampUtc = timestampUtc;
+  record->reportedOnline = input["online"] | true;
+  record->lastSeenAt = millis();
 }
 
 bool mqttIdentityValid(JsonObjectConst input) {
@@ -1871,24 +2405,34 @@ void storeConfigRevision(const String &revision) {
 }
 
 bool recordMioneHeartbeat(const String &imei, bool value, const String &timestamp, const String &source, String &result) {
+  if (imei.isEmpty()) {
+    result = "Heartbeat ohne Modem-IMEI ignoriert";
+    mioneHeartbeatMessage = result + " (" + source + ")";
+    return false;
+  }
+  bool ok = !modem.imei().isEmpty() && imei == modem.imei();
+  if (!ok) {
+    result = "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+    mioneHeartbeatMessage = result + " (" + source + ")";
+    return false;
+  }
   mioneHeartbeatImei = imei;
   mioneHeartbeatValue = value;
   mioneHeartbeatTimestamp = timestamp;
   mioneHeartbeatReceivedAt = millis();
-  bool ok = !modem.imei().isEmpty() && imei == modem.imei();
-  if (ok && value) {
+  if (value) {
     heartbeatMonitorStartedAt = millis();
     lastHeartbeatAlarmAt = 0;
   }
-  result = ok ? "Heartbeat empfangen" : "Heartbeat-IMEI stimmt nicht mit dem Modem ueberein";
+  result = "Heartbeat empfangen";
   mioneHeartbeatMessage = result + " (" + source + ")";
-  return ok;
+  return true;
 }
 
 bool validMioneHeartbeat() {
-  if (!mioneHeartbeatReceivedAt || !mioneHeartbeatValue) return false;
+  if (!mioneHeartbeatReceivedAt) return false;
   if (modem.imei().isEmpty() || mioneHeartbeatImei != modem.imei()) return false;
-  return millis() - mioneHeartbeatReceivedAt <= kHeartbeatAlarmMs;
+  return millis() - mioneHeartbeatReceivedAt <= kHeartbeatFreshMs;
 }
 
 void sendHeartbeatAlarm() {
@@ -1907,6 +2451,11 @@ void sendHeartbeatAlarm() {
   uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
   bool ok = alarmRouter.processAlarmPayload(doc.as<JsonObjectConst>(), modem.imei(), config.commandSecret, secondsOfDay, result);
   queueSystemLog(ok ? "HEARTBEAT_ALARM" : "HEARTBEAT_ALARM_ERROR", result);
+  if (ok) {
+    publishAlarmMonitoring("MIONE_HEARTBEAT", "MiOne Heartbeat seit 15 Minuten ausgefallen",
+                           "Heartbeat", modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                           !modem.alarmDeliveryAvailable());
+  }
 }
 
 void maintainHeartbeatAlarm() {
@@ -1927,10 +2476,51 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
   if (!config.mqttEnabled) return;
   String incoming(topic);
   String root = mqttDeviceRoot();
-  String mioneRoot = config.mqttUser + "/Alarmfunktionen/config";
-  String mioneHeartbeatTopic = config.mqttUser + "/Alarmfunktionen/Heartbeat";
-  String mioneImeiTopic = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
-  if (!config.mqttUser.isEmpty() && incoming == mioneImeiTopic) {
+  String mioneRoot = mioneConfigRoot();
+  String mioneTopic = mioneTopicRoot();
+  if (!root.isEmpty() && (incoming.startsWith(root + "/app/") || incoming.startsWith(root + "/bridge/"))) {
+    String source = incoming.startsWith(root + "/bridge/") ? "Bridge" : "The_App";
+    if (incoming.endsWith("/status")) {
+      DynamicJsonDocument status(512);
+      DeserializationError parsed = deserializeJson(status, payload, length);
+      if (!parsed && status.is<JsonObjectConst>()) {
+        JsonObjectConst payloadStatus = status.as<JsonObjectConst>();
+        bool online = payloadStatus["online"] | true;
+        String label = payloadStatus["source"] | payloadStatus["name"] | payloadStatus["client"] | source;
+        String message = payloadStatus["message"] | "";
+        if (message.isEmpty()) message = online ? "online" : "offline";
+        touchAppBridgeStatus(label, message, online);
+      } else {
+        String message;
+        message.reserve(length);
+        for (unsigned int i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
+        message.trim();
+        message.toLowerCase();
+        bool online = !(message == "0" || message == "false" || message == "offline" || message == "aus");
+        touchAppBridgeStatus(source, online ? "online" : "offline", online);
+      }
+    } else {
+      touchAppBridgeStatus(source, "MQTT-Aktivitaet erkannt", true);
+    }
+  }
+  String appRoot = appPresenceTopicRoot();
+  if (!appRoot.isEmpty() && incoming.startsWith(appRoot + "/") && incoming.endsWith("/presence")) {
+    DynamicJsonDocument input(768);
+    DeserializationError parsed = deserializeJson(input, payload, length);
+    if (!parsed && input.is<JsonObjectConst>()) {
+      String remainder = incoming.substring(appRoot.length() + 1);
+      int slash = remainder.indexOf('/');
+      String installationId = slash >= 0 ? remainder.substring(0, slash) : remainder;
+      String body;
+      body.reserve(length);
+      for (unsigned int i = 0; i < length; ++i) body += static_cast<char>(payload[i]);
+      recordAppPresence(installationId, input.as<JsonObjectConst>(), incoming, body);
+    }
+    return;
+  }
+  String mioneHeartbeatTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Heartbeat";
+  String mioneImeiTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Config/Mobile/modemImei";
+  if (!mioneTopic.isEmpty() && incoming == mioneImeiTopic) {
     String received;
     received.reserve(length);
     for (unsigned int i = 0; i < length; ++i) received += static_cast<char>(payload[i]);
@@ -1942,7 +2532,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     mioneImeiReceivedAt = millis();
     return;
   }
-  if (!config.mqttUser.isEmpty() && incoming == mioneHeartbeatTopic) {
+  if (!mioneTopic.isEmpty() && incoming == mioneHeartbeatTopic) {
     DynamicJsonDocument input(512);
     DeserializationError parsed = deserializeJson(input, payload, length);
     if (parsed) {
@@ -1954,8 +2544,8 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     recordMioneHeartbeat(heartbeatImei, input["value"] | true, input["timestampUtc"] | "", "MQTT", result);
     return;
   }
-  String currentMobileTopic = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
-  if (!config.mqttUser.isEmpty() && incoming == currentMobileTopic) {
+  String currentMobileTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Config/Mobile";
+  if (!mioneTopic.isEmpty() && incoming == currentMobileTopic) {
     DynamicJsonDocument input(3072);
     DeserializationError parsed = deserializeJson(input, payload, length);
     String result = parsed ? String(parsed.c_str()) : "";
@@ -1975,7 +2565,7 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     }
     return;
   }
-  if (!config.mqttUser.isEmpty() && incoming.startsWith(mioneRoot + "/Mobile Slot ")) {
+  if (!mioneRoot.isEmpty() && incoming.startsWith(mioneRoot + "/Mobile Slot ")) {
     int slot = incoming.substring((mioneRoot + "/Mobile Slot ").length()).toInt();
     DynamicJsonDocument input(1536);
     DeserializationError parsed = deserializeJson(input, payload, length);
@@ -1996,9 +2586,9 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     }
     return;
   }
-  String currentAlarmTopic = config.mqttUser + "/Alarmfunktionen/Alarm";
-  String compatibleAlarmTopic = config.mqttUser + "/Alarmfunktionen/Alarme";
-  if (!config.mqttUser.isEmpty() &&
+  String currentAlarmTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Alarm";
+  String compatibleAlarmTopic = mioneTopic.isEmpty() ? "" : mioneTopic + "/Alarme";
+  if (!mioneTopic.isEmpty() &&
       (incoming == currentAlarmTopic || incoming == compatibleAlarmTopic ||
        incoming == mioneRoot + "/Alarme")) {
     DynamicJsonDocument input(6144);
@@ -2006,13 +2596,18 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     String result = parsed ? String(parsed.c_str()) : "";
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
     uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
+    String alarmCode = input["alarmCode"] | "";
+    String alarmText = input["alarmText"] | input["message"] | input["text"] | "";
+    String priority = input["prioritaet"] | "";
     bool ok = !parsed && alarmRouter.processAlarmPayload(input.as<JsonObjectConst>(),
                                                           modem.imei(), config.commandSecret,
                                                           secondsOfDay, result);
-    String alarmCode = input["alarmCode"] | "";
-    String priority = input["prioritaet"] | "";
     queueSystemLog(ok ? "ALARM" : "ALARM_REJECTED",
                    "code=" + alarmCode + ",priority=" + priority + ",result=" + result);
+    if (ok) {
+      publishAlarmMonitoring(alarmCode, alarmText, "MiOne", modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                             !modem.alarmDeliveryAvailable());
+    }
     if (!root.isEmpty()) {
       DynamicJsonDocument response(512);
       response["ok"] = ok;
@@ -2081,7 +2676,10 @@ void onMqtt(char *topic, byte *payload, unsigned int length) {
     serializeJson(response, body);
     String resultTopic = root + "/app/config/result";
     publishMqttTopic(resultTopic, body, false);
-    if (applied) restartAt = millis() + 1000;
+    if (applied) {
+      queueSystemLog("CONFIG_CHANGE", "MQTT-Konfiguration gespeichert, Neustart geplant");
+      requestReboot("config", "MQTT-Konfiguration gespeichert", 1000);
+    }
     return;
   }
   return;
@@ -2116,13 +2714,19 @@ bool mqttConnectedAny() {
 
 bool publishMqttTopic(const String &topic, const String &body, bool retain) {
   if (topic.isEmpty()) return false;
-  if (mqtt.connected()) return mqtt.publish(topic.c_str(), body.c_str(), retain);
+  if (mqtt.connected()) {
+    bool ok = mqtt.publish(topic.c_str(), body.c_str(), retain);
+    if (ok) noteCommunicationHealth();
+    return ok;
+  }
   if (!modem.mqttConnected()) return false;
   String error;
   bool ok = modem.mqttPublish(topic, body, retain, error);
   if (!ok && millis() - lastCellularMqttErrorAt > 30000) {
     lastCellularMqttErrorAt = millis();
     setMqttConnectionStatus(-18, error, "Mobilfunk");
+  } else if (ok) {
+    noteCommunicationHealth();
   }
   return ok;
 }
@@ -2144,7 +2748,8 @@ void maintainMqtt() {
   if ((wifiUp || ethernetUp) && modem.mqttConnected()) modem.mqttDisconnect();
   if (mqtt.connected()) {
     mqttConnectWindowStartedAt = 0;
-    String transport = ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "WLAN";
+    String transport = WiFi.status() == WL_CONNECTED ? "WLAN" :
+                      (ethernetReady && Ethernet.linkStatus() == LinkON ? "Ethernet" : "Mobilfunk");
     if (mqtt.loop()) {
       setMqttConnectionStatus(MQTT_CONNECTED,
                               config.mqttEnabled ? "Mit dem MQTT-Broker verbunden" :
@@ -2162,7 +2767,7 @@ void maintainMqtt() {
   String root = mqttDeviceRoot();
   if (root.isEmpty()) {
     mqttConnectWindowStartedAt = 0;
-    setMqttConnectionStatus(-13, "Modem-IMEI fuer das MQTT-Topic fehlt");
+    setMqttConnectionStatus(-13, "System-ID oder Modem-IMEI fuer das MQTT-Topic fehlt");
     return;
   }
   if (!wifiUp && !ethernetUp) {
@@ -2215,9 +2820,9 @@ void maintainMqtt() {
   }
   if (millis() - lastMqttAttempt < 10000) return;
   lastMqttAttempt = millis();
-  String transport = ethernetUp ? "Ethernet" : "WLAN";
-  if (ethernetUp) mqtt.setClient(ethernetClient);
-  else mqtt.setClient(wifiClient);
+  String transport = wifiUp ? "WLAN" : "Ethernet";
+  if (wifiUp) mqtt.setClient(wifiClient);
+  else mqtt.setClient(ethernetClient);
   mqtt.setServer(config.mqttHost.c_str(), config.mqttPort);
   String willTopic = root + "/status";
   String clientId = config.deviceId + "-" + modem.imei().substring(9);
@@ -2233,24 +2838,27 @@ void maintainMqtt() {
     publishMqttTopic(willTopic, online, true);
     String topic;
     mqttMobileSubscriptionReady = false;
-    if (config.mqttEnabled && !config.mqttUser.isEmpty()) {
-      String mioneRoot = config.mqttUser + "/Alarmfunktionen/config";
+    if (config.mqttEnabled && !mioneTopicRoot().isEmpty()) {
+      String mioneRoot = mioneConfigRoot();
+      String topicRoot = mioneTopicRoot();
       bool subscriptionsOk = true;
-      topic = config.mqttUser + "/Alarmfunktionen/Config/Mobile";
+      topic = topicRoot + "/Config/Mobile";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/Alarmfunktionen/Config/Mobile/modemImei";
+      topic = topicRoot + "/Config/Mobile/modemImei";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/Alarmfunktionen/Heartbeat";
+      topic = topicRoot + "/Heartbeat";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/Alarmfunktionen/Alarm";
+      topic = topicRoot + "/Alarm";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
-      topic = config.mqttUser + "/Alarmfunktionen/Alarme";
+      topic = topicRoot + "/Alarme";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       for (uint8_t slot = 1; slot <= 5; ++slot) {
         topic = mioneRoot + "/Mobile Slot " + String(slot);
         subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       }
       topic = mioneRoot + "/Alarme";
+      subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
+      topic = config.mqttBaseTopic + "/the_app/+/presence";
       subscriptionsOk = mqtt.subscribe(topic.c_str(), 1) && subscriptionsOk;
       mqttMobileSubscriptionReady = subscriptionsOk;
       if (!subscriptionsOk) mqttMobileSyncMessage = "MQTT-Abonnement der Alarmfunktionen-Topics fehlgeschlagen";
@@ -2308,15 +2916,39 @@ String mioneStatusBody() {
 
 void publishMioneStatus(bool force) {
   if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
-  if (!force && millis() - lastMioneStatusPublish < 5000) return;
+  if (!force && millis() - lastMioneStatusPublish < kMioneStatusPublishMs) return;
   lastMioneStatusPublish = millis();
   String body = mioneStatusBody();
   String root = mqttDeviceRoot();
   if (!root.isEmpty()) publishMqttTopic(root + "/status", body, true);
-  if (!config.mqttUser.isEmpty()) {
-    String topic = config.mqttUser + "/Alarmfunktionen/ModemStatus";
-    publishMqttTopic(topic, body, true);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) {
+      String topic = topicRoot + "/ModemStatus";
+      publishMqttTopic(topic, body, true);
+    }
   }
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) {
+    publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/ModemStatus", body, true);
+  }
+  publishMioneConfig(force);
+}
+
+void publishMioneConfig(bool force) {
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
+  if (!force && millis() - lastMioneConfigPublish < 30000) return;
+  lastMioneConfigPublish = millis();
+  DynamicJsonDocument doc(8192);
+  config.toJson(doc.to<JsonObject>(), true);
+  JsonObject meta = doc.createNestedObject("meta");
+  meta["type"] = "alarmModemConfig";
+  meta["modemImei"] = modem.imei();
+  meta["timestamp"] = clockText();
+  String body;
+  serializeJson(doc, body);
+  String root = mqttDeviceRoot();
+  if (!root.isEmpty()) publishMqttTopic(root + "/app/config/current", body, true);
 }
 
 bool upDownButtonsPressed(int adcValue) {
@@ -2347,7 +2979,6 @@ void maintainButtons() {
 }
 
 void maintainUpdates() {
-  if (updateState.manualCheckRequired) return;
   if (updateState.approved && !updateState.installing) {
     updateState.approved = false;
     updateState.failed = false;
@@ -2394,6 +3025,7 @@ void maintainUpdates() {
     publishUpdateState();
     return;
   }
+  if (updateState.manualCheckRequired) return;
   if (updateState.available && !updateState.downloaded && !updateState.failed) {
     String error;
     updateStatusCanServeWeb = true;
@@ -2559,11 +3191,39 @@ void showUpdateStatus(const String &step, const String &detail, uint8_t progress
 
 void sendAlarmProgress(const String &body) {
   if (!config.alarmProgressEnabled) return;
-  if (mqttConnectedAny() && !config.mqttUser.isEmpty()) {
-    String topic = config.mqttUser + "/Alarmfunktionen/AlarmStatus";
-    publishMqttTopic(topic, body, false);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (mqttConnectedAny() && !topicRoot.isEmpty()) {
+      String topic = topicRoot + "/AlarmStatus";
+      publishMqttTopic(topic, body, false);
+    }
   }
   if (activeAlarmSocket && activeAlarmSocket->connected()) activeAlarmSocket->println(body);
+}
+
+void publishAlarmMonitoring(const String &alarmCode, const String &alarmText, const String &source,
+                            const String &delivery, bool mqttOnly) {
+  if (!mqttConnectedAny() || modem.imei().isEmpty()) return;
+  DynamicJsonDocument event(1024);
+  event["type"] = "alarmEvent";
+  event["modemImei"] = modem.imei();
+  event["alarmCode"] = alarmCode;
+  event["alarmText"] = alarmText;
+  event["source"] = source;
+  event["delivery"] = delivery;
+  event["mqttOnly"] = mqttOnly;
+  event["status"] = "triggered";
+  event["timestamp"] = clockText();
+  String body;
+  serializeJson(event, body);
+  if (config.mqttEnabled) {
+    String topicRoot = mioneTopicRoot();
+    if (!topicRoot.isEmpty()) publishMqttTopic(topicRoot + "/AlarmStatus", body, false);
+  }
+  String serviceRoot = serviceMqttRoot();
+  if (!serviceRoot.isEmpty()) {
+    publishMqttTopic(serviceRoot + "/modems/" + modem.imei() + "/AlarmStatus", body, false);
+  }
 }
 
 void showAlarmProgress(const String &alarmCode, const String &alarmText,
@@ -2651,8 +3311,15 @@ void processAlarmSocketLine(const String &line) {
   } else {
     DateTime now = rtcReady ? rtc.now() : DateTime(2000, 1, 1, 0, 0, 0);
     uint32_t secondsOfDay = rtcReady ? now.hour() * 3600UL + now.minute() * 60UL + now.second() : UINT32_MAX;
+    String alarmCode = input["alarmCode"] | "";
+    String alarmText = input["alarmText"] | input["message"] | input["text"] | "";
     ok = alarmRouter.processAlarmPayload(input.as<JsonObjectConst>(), modem.imei(),
                                          config.commandSecret, secondsOfDay, result);
+    if (ok) {
+      publishAlarmMonitoring(alarmCode, alarmText, "TCP",
+                             modem.alarmDeliveryAvailable() ? "SMS/Anruf" : "MQTT only",
+                             !modem.alarmDeliveryAvailable());
+    }
   }
   response["ok"] = ok;
   response["message"] = result;
@@ -2793,9 +3460,11 @@ void updateDisplay() {
 void setup() {
   Serial.begin(115200);
   delay(100);
+  SystemRuntime::initWatchdog();
   config.setDefaults(chipId());
   String error;
   if (!configStore.begin(config, error)) Serial.println(error);
+  SystemRuntime::kickWatchdog();
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   tzset();
   pinMode(BoardPins::buttonsAdc, INPUT);
@@ -2808,6 +3477,7 @@ void setup() {
   }
   currentButtonAdc = static_cast<int>(buttonSampleSum / 10);
   updateButtonIdle = currentButtonAdc;
+  SystemRuntime::kickWatchdog();
 
   Wire.begin(BoardPins::i2cSda, BoardPins::i2cScl);
   if (config.displayEnabled) {
@@ -2821,41 +3491,55 @@ void setup() {
 
   showBootStatus("Schnittstellen", 15, "SPI starten");
   beginSharedSpi();
+  SystemRuntime::kickWatchdog();
   showBootStatus("SD-Karte", 22, config.sdEnabled ? "wird geprueft" : "deaktiviert");
   beginSd();
+  SystemRuntime::kickWatchdog();
   restoreUpdateManualLock();
   recoverInterruptedWebUpdate();
   showBootStatus("SD-Karte", 30, !config.sdEnabled ? "deaktiviert" : (sdReady ? "bereit" : "FEHLER"));
 
   showBootStatus("WLAN / Hotspot", 37, "wird gestartet");
   beginWifi();
+  SystemRuntime::kickWatchdog();
   showBootStatus("WLAN / Hotspot", 44,
                  accessPoint ? "Hotspot aktiv" : (config.wifiEnabled ? "WLAN gestartet" : "deaktiviert"));
 
   showBootStatus("Ethernet", 51, config.ethernetEnabled ? "wird gestartet" : "deaktiviert");
   beginEthernet();
+  SystemRuntime::kickWatchdog();
   showBootStatus("Ethernet", 58,
                  !config.ethernetEnabled ? "deaktiviert" : (ethernetReady ? "bereit" : "nicht verbunden"));
 
   showBootStatus("Echtzeituhr", 64, "wird geprueft");
   rtcReady = rtc.begin();
   if (rtcReady && rtc.lostPower()) rtc.adjust(DateTime(__DATE__, __TIME__));
+  SystemRuntime::kickWatchdog();
   showBootStatus("Echtzeituhr", 70, rtcReady ? "bereit" : "FEHLER");
 
   showBootStatus("Mobilfunkmodem", 76, "wird erkannt");
   modem.begin(config);
+  SystemRuntime::kickWatchdog();
+  if (!waitForBootImei(82, kBootImeiWaitMs)) {
+    return;
+  }
   showBootStatus("Mobilfunkmodem", 82,
-                 !modem.model().isEmpty() ? modem.model() + " erkannt" : "nicht erkannt");
+                 !config.cellularEnabled ? "deaktiviert"
+                                         : (!modem.model().isEmpty() ? modem.model() + " erkannt"
+                                                                     : "nicht erkannt"));
 
   showBootStatus("Alarmsteuerung", 87, "Daten laden");
   alarmRouter.setProgressCallback(showAlarmProgress);
   alarmRouter.begin();
+  SystemRuntime::kickWatchdog();
   mqtt.setCallback(onMqtt);
   mqtt.setBufferSize(6144);
   beginOfflineTcp();
   showBootStatus("Webserver", 93, "wird gestartet");
   setupWeb();
-  MDNS.begin(config.deviceId.c_str());
+  SystemRuntime::kickWatchdog();
+  String mdnsHost = config.mdnsName.isEmpty() ? config.deviceId : config.mdnsName;
+  MDNS.begin(mdnsHost.c_str());
   showBootStatus("System bereit", 100, accessPoint ? "Config-Hotspot aktiv" : "Alarmierung aktiv");
   Preferences logPrefs;
   uint32_t bootCount = 1;
@@ -2864,26 +3548,41 @@ void setup() {
     logPrefs.putULong("bootCount", bootCount);
     logPrefs.end();
   }
-  queueSystemLog("BOOT", "count=" + String(bootCount) +
-                         ",reason=" + String(resetReasonName(esp_reset_reason())) +
-                         ",firmware=" + BuildInfo::version + ",imei=" + modem.imei() +
-                         ",model=" + modem.model());
+  String plannedRebootReason;
+  String plannedRebootDetail;
+  bool hadPlannedReboot = SystemRuntime::consumeRebootRequest(plannedRebootReason, plannedRebootDetail);
+  String bootDetails = "count=" + String(bootCount) +
+                       ",reason=" + String(SystemRuntime::resetReasonName(esp_reset_reason())) +
+                       ",powerCycle=" + String(isPowerCycleReset() ? 1 : 0) +
+                       ",firmware=" + BuildInfo::version + ",imei=" + modem.imei() +
+                       ",model=" + modem.model();
+  bootDetails += ",imeiRecovery=" + String(imeiRecoveryReboots);
+  if (hadPlannedReboot) {
+    bootDetails += ",rebootSource=" + plannedRebootReason;
+    if (!plannedRebootDetail.isEmpty()) bootDetails += ",rebootDetail=" + plannedRebootDetail;
+  } else {
+    bootDetails += ",rebootSource=none";
+  }
+  queueSystemLog("BOOT", bootDetails);
   delay(500);
   Serial.printf("Firmware %s gestartet\n", BuildInfo::version);
 }
 
 void loop() {
+  SystemRuntime::kickWatchdog();
   if (accessPoint) captiveDns.processNextRequest();
   web.handleClient();
   maintainOfflineTcp();
   maintainDigitalInputs();
   modem.loop();
+  maintainBootImeiRecovery();
   bool primaryNetwork = WiFi.status() == WL_CONNECTED ||
                         (ethernetReady && Ethernet.linkStatus() == LinkON);
   modem.maintainDataFallback(!primaryNetwork && millis() > 30000);
   maintainMqtt();
   maintainHeartbeatAlarm();
   publishMioneStatus();
+  maintainCommunicationSupervisor();
   maintainButtons();
   maintainUpdates();
   maintainClock();
@@ -2891,7 +3590,9 @@ void loop() {
   updateDisplay();
   maintainSystemLog();
   if (restartAt && static_cast<int32_t>(millis() - restartAt) >= 0) {
-    queueSystemLog("REBOOT", "Geplanter Neustart");
+    String reason = rebootRequestReason.isEmpty() ? "manual" : rebootRequestReason;
+    String detail = rebootRequestDetail.isEmpty() ? "Geplanter Neustart" : rebootRequestDetail;
+    queueSystemLog("REBOOT", "source=" + reason + ",detail=" + detail);
     maintainSystemLog(true);
     ESP.restart();
   }

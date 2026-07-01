@@ -1,5 +1,7 @@
 #include "DeviceConfig.h"
 
+#include "BuildInfo.h"
+
 #include <IPAddress.h>
 
 namespace {
@@ -23,6 +25,36 @@ void ipFromJson(JsonObjectConst in, IPv4Config &ip) {
 bool validIp(const String &value) {
   IPAddress parsed;
   return parsed.fromString(value);
+}
+
+bool validSystemId(const String &value) {
+  if (value.isEmpty()) return false;
+  if (value.indexOf('/') >= 0) return false;
+  if (value.indexOf('#') >= 0 || value.indexOf('+') >= 0) return false;
+  return true;
+}
+
+bool validMqttTopicRoot(const String &value) {
+  if (value.isEmpty()) return true;
+  if (value.startsWith("/") || value.endsWith("/")) return false;
+  if (value.indexOf('#') >= 0 || value.indexOf('+') >= 0) return false;
+  if (value.indexOf("//") >= 0) return false;
+  return true;
+}
+
+String betaManifestUrl() {
+  return String("https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json?v=") + BuildInfo::version;
+}
+
+bool validMdnsName(const String &value) {
+  if (value.isEmpty()) return true;
+  if (value.length() > 63) return false;
+  if (value.startsWith("-") || value.endsWith("-")) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    char ch = static_cast<char>(tolower(static_cast<unsigned char>(value[i])));
+    if (!(isalpha(static_cast<unsigned char>(ch)) || isdigit(static_cast<unsigned char>(ch)) || ch == '-')) return false;
+  }
+  return true;
 }
 
 bool safeAtValue(const String &value) {
@@ -55,8 +87,14 @@ bool validInputDelay(uint16_t seconds) {
 
 void DeviceConfig::setDefaults(const String &chipId) {
   deviceId = "alarm-" + chipId;
+  mdnsName = deviceId;
   webPassword = chipId;
   commandSecret = chipId;
+  mqttHost = "194.164.51.139";
+  mqttPort = 1883;
+  mqttUser = "mqtt_master_key";
+  mqttPassword = "dyjpaz-xakfip-1guwdI";
+  mqttServiceEnabled = false;
   updateManifestUrl = "https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/latest/download/firmware.json";
 }
 
@@ -70,6 +108,7 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   wifi["ssid"] = wifiSsid;
   secret(wifi, "password", wifiPassword, includeSecrets);
   ipToJson(wifi.createNestedObject("ip"), wifiIp);
+  root["mdnsName"] = mdnsName;
 
   JsonObject ethernet = root.createNestedObject("ethernet");
   ethernet["enabled"] = ethernetEnabled;
@@ -97,6 +136,8 @@ void DeviceConfig::toJson(JsonObject root, bool includeSecrets) const {
   mqtt["user"] = mqttUser;
   secret(mqtt, "password", mqttPassword, includeSecrets);
   mqtt["baseTopic"] = mqttBaseTopic;
+  mqtt["serviceEnabled"] = mqttServiceEnabled;
+  mqtt["topTopic"] = mqttTopTopic;
 
   JsonObject tcp = root.createNestedObject("offlineTcp");
   tcp["enabled"] = offlineTcpEnabled;
@@ -147,6 +188,13 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   wifiSsid = wifi["ssid"] | wifiSsid;
   if (wifi["password"].is<const char *>() && wifi["password"] != "***") wifiPassword = wifi["password"].as<String>();
   ipFromJson(wifi["ip"], wifiIp);
+  JsonVariantConst mdns = root["mdnsName"];
+  if (mdns.isNull()) mdnsName = deviceId;
+  else {
+    mdnsName = mdns.as<String>();
+    mdnsName.trim();
+    mdnsName.toLowerCase();
+  }
 
   JsonObjectConst ethernet = root["ethernet"];
   ethernetEnabled = ethernet["enabled"] | ethernetEnabled;
@@ -173,6 +221,13 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   mqttPort = mqtt["port"] | mqttPort;
   mqttUser = mqtt["user"] | mqttUser;
   if (mqtt["password"].is<const char *>() && mqtt["password"] != "***") mqttPassword = mqtt["password"].as<String>();
+  mqttBaseTopic = mqtt["baseTopic"] | mqttBaseTopic;
+  mqttBaseTopic.trim();
+  mqttTopTopic = mqtt["topTopic"] | mqttTopTopic;
+  mqttTopTopic.trim();
+  JsonVariantConst mqttService = mqtt["serviceEnabled"];
+  if (mqttService.isNull()) mqttServiceEnabled = !mqttTopTopic.isEmpty();
+  else mqttServiceEnabled = mqttService | mqttServiceEnabled;
 
   JsonObjectConst tcp = root["offlineTcp"];
   offlineTcpEnabled = tcp["enabled"] | offlineTcpEnabled;
@@ -223,6 +278,10 @@ bool DeviceConfig::fromJson(JsonObjectConst root, String &error) {
   }
   updateChannel = update["channel"] | updateChannel;
   updateManifestUrl = update["manifestUrl"] | updateManifestUrl;
+  if (updateChannel == "beta") {
+    const String legacyBetaManifestUrl = "https://github.com/mrcrash112/ESP32-GSM-AE08-R-L/releases/download/beta/firmware.json";
+    if (updateManifestUrl.isEmpty() || updateManifestUrl == legacyBetaManifestUrl) updateManifestUrl = betaManifestUrl();
+  }
   updateCheckMinutes = update["checkMinutes"] | updateCheckMinutes;
   return validate(error);
 }
@@ -232,8 +291,12 @@ bool DeviceConfig::validate(String &error) const {
   else if (deviceId.isEmpty() || deviceId.length() > 48) error = "deviceId ist ungueltig";
   else if (!wifiIp.dhcp && (!validIp(wifiIp.address) || !validIp(wifiIp.gateway) || !validIp(wifiIp.subnet))) error = "Statische WLAN-IP ist ungueltig";
   else if (!ethernetIp.dhcp && (!validIp(ethernetIp.address) || !validIp(ethernetIp.gateway) || !validIp(ethernetIp.subnet))) error = "Statische Ethernet-IP ist ungueltig";
-  else if (mqttEnabled && (!mqttHost.isEmpty() && mqttPort == 0)) error = "MQTT-Port ist ungueltig";
+  else if (!validMdnsName(mdnsName)) error = "mDNS-Name ist ungueltig";
+  else if ((mqttEnabled || mqttServiceEnabled) && mqttHost.isEmpty()) error = "MQTT-Broker fehlt";
+  else if ((mqttEnabled || mqttServiceEnabled) && mqttPort == 0) error = "MQTT-Port ist ungueltig";
   else if (mqttUser.indexOf('#') >= 0 || mqttUser.indexOf('+') >= 0 || mqttUser.indexOf('/') >= 0) error = "MQTT-Benutzername darf keine Topic-Sonderzeichen enthalten";
+  else if (mqttEnabled && !validSystemId(mqttBaseTopic)) error = "System-ID fehlt oder ist ungueltig";
+  else if (mqttServiceEnabled && !validMqttTopicRoot(mqttTopTopic)) error = "TopTopic darf keine Topic-Sonderzeichen enthalten";
   else if (offlineTcpEnabled && offlineTcpPort == 0) error = "Offline-TCP-Port fehlt";
   else if (!safeAtValue(apn) || !safeAtValue(apnUser) || !safeAtValue(apnPassword)) error = "Mobilfunk-Zugangsdaten enthalten ungueltige Zeichen";
   else if (logIntervalSeconds < 10 || logIntervalSeconds > 3600) error = "Log-Intervall muss zwischen 10 und 3600 Sekunden liegen";

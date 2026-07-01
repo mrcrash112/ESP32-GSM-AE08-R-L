@@ -6,16 +6,44 @@
 #include <SPI.h>
 #include <Update.h>
 #include <Wire.h>
+#include <time.h>
 #include <esp_ota_ops.h>
 
 #include "BoardPins.h"
 #include "BuildInfo.h"
+#include "SystemRuntime.h"
 
 namespace {
 bool sdMounted = false;
 bool displayReady = false;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 uint32_t lastDisplayUpdate = 0;
+
+String currentRecoveryLogPath() {
+  time_t nowEpoch = time(nullptr);
+  struct tm local {};
+  if (nowEpoch < 946684800) return "/logs/system-boot.csv";
+  localtime_r(&nowEpoch, &local);
+  if (local.tm_year + 1900 < 2020) return "/logs/system-boot.csv";
+  char text[40];
+  snprintf(text, sizeof(text), "/logs/system-%04u-%02u-%02u.csv",
+           local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
+  return String(text);
+}
+
+void appendRecoveryLog(const String &event, const String &details) {
+  if (!sdMounted) return;
+  SD.mkdir("/logs");
+  File logFile = SD.open(currentRecoveryLogPath(), FILE_APPEND);
+  if (!logFile) return;
+  if (logFile.size() == 0) logFile.print("timestamp;event;details\n");
+  logFile.print("recovery;");
+  logFile.print(event);
+  logFile.print(';');
+  logFile.print(details);
+  logFile.print('\n');
+  logFile.close();
+}
 
 void showStatus(const String &step, const String &detail, uint8_t progress, bool force = false) {
   if (!displayReady || (!force && millis() - lastDisplayUpdate < 100)) return;
@@ -93,6 +121,7 @@ bool finalizeWebUpdate(bool success) {
 
 void bootMain(const String &result) {
   bool success = result == "Firmware erfolgreich installiert";
+  appendRecoveryLog("RECOVERY_REBOOT", "result=" + result);
   showStatus("WWW abschliessen", "Dateien aufraeumen", success ? 98 : 0, true);
   finalizeWebUpdate(success);
   showStatus(result == "Firmware erfolgreich installiert" ? "Update fertig" : "UPDATE FEHLER",
@@ -129,6 +158,7 @@ bool actualMd5(File &file, String &value) {
     checked += static_cast<size_t>(count);
     showStatus("Firmware pruefen", String(checked / 1024) + " / " + String(size / 1024) + " KB",
                12 + min<size_t>(18, checked * 18 / size));
+    SystemRuntime::kickWatchdog();
     delay(0);
   }
   md5.calculate();
@@ -170,6 +200,7 @@ void installUpdate(const String &expectedMd5) {
     written += count;
     showStatus("Firmware schreiben", String(written / 1024) + " / " + String(size / 1024) + " KB",
                32 + min<size_t>(60, written * 60 / size));
+    SystemRuntime::kickWatchdog();
   }
   firmware.close();
   if (written != size || !Update.end(true) || Update.hasError()) {
@@ -189,6 +220,7 @@ void installUpdate(const String &expectedMd5) {
 void setup() {
   Serial.begin(115200);
   delay(250);
+  SystemRuntime::initWatchdog();
   Wire.begin(BoardPins::i2cSda, BoardPins::i2cScl);
   displayReady = display.begin(SSD1306_SWITCHCAPVCC, BoardPins::oledAddress);
   showStatus("Recovery startet", "Update wird geprueft", 1, true);
@@ -201,9 +233,14 @@ void setup() {
   bool ready = prefs.getBool("ready", false);
   String expectedMd5 = prefs.getString("md5", "");
   prefs.end();
+  appendRecoveryLog("RECOVERY_BOOT", String("version=") + BuildInfo::recoveryVersion +
+                   ",state=" + (ready && expectedMd5.length() == 32 ? "update" : "brick"));
   expectedMd5.toLowerCase();
   if (!ready || expectedMd5.length() != 32) return bootMain("Kein Update vorgemerkt");
   installUpdate(expectedMd5);
 }
 
-void loop() { delay(1000); }
+void loop() {
+  SystemRuntime::kickWatchdog();
+  delay(1000);
+}
