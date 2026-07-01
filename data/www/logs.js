@@ -4,7 +4,6 @@ const refreshButton=document.getElementById('refresh');
 const entries=document.getElementById('entries');
 const count=document.getElementById('count');
 const state=document.getElementById('state');
-const fileHint=document.getElementById('fileHint');
 
 const params=new URLSearchParams(location.search);
 const initialLimit=params.get('limit');
@@ -75,7 +74,6 @@ function renderFileOptions(files){
   }
   const preferred=[initialFile,currentLogPath,list[0]?.path||list[0]?.name].find(path=>path&&list.some(entry=>(entry.path||entry.name)===path));
   if(preferred) fileSelect.value=preferred;
-  fileHint.textContent=currentLogPath?`Aktuell: ${logLabel(currentLogPath)}`:'Es ist noch keine Tageslogdatei verfügbar.';
 }
 
 async function loadFileList(){
@@ -138,7 +136,6 @@ async function init(){
   try{
     await loadFileList();
   }catch(error){
-    fileHint.textContent=error.message;
     fileSelect.replaceChildren();
     const option=document.createElement('option');
     option.value=currentLogPath||'/logs/system-boot.csv';
